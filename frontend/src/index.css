@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-steel-50 text-steel-900;
+}
+
+@layer components {
+  .input {
+    @apply rounded-md border border-steel-200 px-2 py-1.5 text-sm;
+  }
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+  }
+  .sheet-page {
+    page-break-after: always;
+  }
+  .sheet-page:last-child {
+    page-break-after: auto;
+  }
+}
