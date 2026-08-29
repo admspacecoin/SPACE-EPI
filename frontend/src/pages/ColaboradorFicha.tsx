@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import clsx from 'clsx'
-import { doc, getDoc } from 'firebase/firestore'
+import { collection, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useSignedPhotoUrl } from '../lib/useSignedPhotoUrl'
 import { PageHeader } from '../components/PageHeader'
@@ -20,13 +20,14 @@ type Tab = 'dados' | 'exames' | 'historico' | 'relatorio-mensal'
 export default function ColaboradorFicha() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { profile } = useAuth()
+  const { profile, user } = useAuth()
   const canEdit = profile?.perfil === 'admin' || profile?.perfil === 'seguranca'
 
   const [employee, setEmployee] = useState<Employee | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
+  const [savingSituacao, setSavingSituacao] = useState(false)
   const [tab, setTab] = useState<Tab>('dados')
 
   async function load() {
@@ -81,6 +82,43 @@ export default function ColaboradorFicha() {
 
   const fotoUrl = useSignedPhotoUrl(employee?.foto_url)
 
+  async function toggleSituacao() {
+    if (!employee) return
+    const desativando = employee.situacao !== 'desligado'
+    const novaSituacao = desativando ? 'desligado' : 'ativo'
+    setSavingSituacao(true)
+    try {
+      const employeeRef = doc(db, 'employees', employee.id)
+      const batch = writeBatch(db)
+      batch.update(employeeRef, {
+        situacao: novaSituacao,
+        dataDesligamento: desativando ? new Date().toISOString().slice(0, 10) : null,
+        updatedBy: user?.uid ?? null,
+        updatedAt: serverTimestamp(),
+      })
+      batch.set(doc(collection(employeeRef, 'statusHistory')), {
+        situacaoAnterior: employee.situacao,
+        situacaoNova: novaSituacao,
+        usuarioId: user?.uid ?? null,
+        data: serverTimestamp(),
+      })
+      batch.set(doc(collection(db, 'auditLogs')), {
+        usuarioId: user?.uid ?? null,
+        acao: 'UPDATE',
+        modulo: 'employees',
+        registroId: employee.id,
+        dadosAnteriores: { situacao: employee.situacao },
+        dadosNovos: { situacao: novaSituacao },
+        data: serverTimestamp(),
+      })
+      await batch.commit()
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao atualizar situação.')
+    }
+    setSavingSituacao(false)
+  }
+
   if (loading) return <p className="text-sm text-steel-500">Carregando…</p>
   if (error)
     return (
@@ -130,12 +168,26 @@ export default function ColaboradorFicha() {
           </div>
         </div>
         {canEdit && (
-          <button
-            onClick={() => setEditing(true)}
-            className="rounded-md border border-steel-200 bg-white px-4 py-2 text-sm font-medium text-steel-700 hover:bg-steel-50"
-          >
-            Editar
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={toggleSituacao}
+              disabled={savingSituacao}
+              className={clsx(
+                'rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50',
+                employee.situacao !== 'desligado'
+                  ? 'border-status-danger/30 text-status-danger hover:bg-status-danger/5'
+                  : 'border-status-ok/30 text-status-ok hover:bg-status-ok/5'
+              )}
+            >
+              {savingSituacao ? 'Salvando…' : employee.situacao !== 'desligado' ? 'Desativar' : 'Reativar'}
+            </button>
+            <button
+              onClick={() => setEditing(true)}
+              className="rounded-md border border-steel-200 bg-white px-4 py-2 text-sm font-medium text-steel-700 hover:bg-steel-50"
+            >
+              Editar
+            </button>
+          </div>
         )}
       </div>
 

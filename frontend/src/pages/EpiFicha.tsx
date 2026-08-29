@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import clsx from 'clsx'
-import { doc, getDoc } from 'firebase/firestore'
+import { collection, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useCurrentObra } from '../lib/useCurrentObra'
 import { useObraSettings } from '../lib/useObraSettings'
@@ -20,7 +20,7 @@ type Tab = 'dados' | 'variacoes'
 export default function EpiFicha() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { profile } = useAuth()
+  const { profile, user } = useAuth()
   const canEdit = profile?.perfil === 'admin' || profile?.perfil === 'seguranca'
   const { obraId } = useCurrentObra()
   const { settings } = useObraSettings(obraId)
@@ -29,6 +29,7 @@ export default function EpiFicha() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
+  const [savingStatus, setSavingStatus] = useState(false)
   const [tab, setTab] = useState<Tab>('dados')
 
   async function load() {
@@ -74,6 +75,30 @@ export default function EpiFicha() {
   }, [id])
 
   const fotoUrl = useSignedPhotoUrl(item?.foto_url, 'ppe-photos')
+
+  async function toggleStatus() {
+    if (!item) return
+    const novoStatus = item.status === 'ativo' ? 'inativo' : 'ativo'
+    setSavingStatus(true)
+    try {
+      const batch = writeBatch(db)
+      batch.update(doc(db, 'ppeItems', item.id), { status: novoStatus })
+      batch.set(doc(collection(db, 'auditLogs')), {
+        usuarioId: user?.uid ?? null,
+        acao: 'UPDATE',
+        modulo: 'ppeItems',
+        registroId: item.id,
+        dadosAnteriores: { status: item.status },
+        dadosNovos: { status: novoStatus },
+        data: serverTimestamp(),
+      })
+      await batch.commit()
+      setItem({ ...item, status: novoStatus })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao atualizar status.')
+    }
+    setSavingStatus(false)
+  }
 
   if (loading) return <p className="text-sm text-steel-500">Carregando…</p>
   if (error)
@@ -127,12 +152,26 @@ export default function EpiFicha() {
           </div>
         </div>
         {canEdit && (
-          <button
-            onClick={() => setEditing(true)}
-            className="rounded-md border border-steel-200 bg-white px-4 py-2 text-sm font-medium text-steel-700 hover:bg-steel-50"
-          >
-            Editar
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={toggleStatus}
+              disabled={savingStatus}
+              className={clsx(
+                'rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50',
+                item.status === 'ativo'
+                  ? 'border-status-danger/30 text-status-danger hover:bg-status-danger/5'
+                  : 'border-status-ok/30 text-status-ok hover:bg-status-ok/5'
+              )}
+            >
+              {savingStatus ? 'Salvando…' : item.status === 'ativo' ? 'Desativar' : 'Reativar'}
+            </button>
+            <button
+              onClick={() => setEditing(true)}
+              className="rounded-md border border-steel-200 bg-white px-4 py-2 text-sm font-medium text-steel-700 hover:bg-steel-50"
+            >
+              Editar
+            </button>
+          </div>
         )}
       </div>
 
