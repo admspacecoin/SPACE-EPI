@@ -13,6 +13,7 @@ export function EntriesHistory({ obraId }: { obraId: string | null | undefined }
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [estornandoId, setEstornandoId] = useState<string | null>(null)
+  const [confirmandoId, setConfirmandoId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!obraId) return
@@ -87,7 +88,11 @@ export function EntriesHistory({ obraId }: { obraId: string | null | undefined }
   }, [load])
 
   async function handleEstornar(id: string) {
-    if (!confirm('Estornar esta entrada? Isso vai subtrair a quantidade do estoque atual.')) return
+    if (confirmandoId !== id) {
+      setConfirmandoId(id)
+      return
+    }
+    setConfirmandoId(null)
     setEstornandoId(id)
     setError(null)
     try {
@@ -180,7 +185,11 @@ export function EntriesHistory({ obraId }: { obraId: string | null | undefined }
                         disabled={estornandoId === e.id}
                         className="text-xs font-medium text-status-danger hover:opacity-80 disabled:opacity-50"
                       >
-                        {estornandoId === e.id ? 'Estornando…' : 'Estornar'}
+                        {estornandoId === e.id
+                          ? 'Estornando…'
+                          : confirmandoId === e.id
+                            ? 'Confirmar estorno?'
+                            : 'Estornar'}
                       </button>
                     )}
                   </td>
