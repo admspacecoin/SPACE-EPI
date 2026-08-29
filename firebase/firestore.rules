@@ -122,7 +122,14 @@ service cloud.firestore {
     match /inventoryMovements/{id} {
       allow read: if logado();
       allow create: if podeGerenciarEstoque();
-      allow update, delete: if false; // imutável, mesma garantia de antes
+      // Fatos gravados (quantidade/tipo/variantId/data/usuarioId) continuam
+      // imutáveis — nunca dá pra editar o que aconteceu. Mas dá pra marcar
+      // que uma entrada foi estornada (ver estornarEntrada em backend.ts),
+      // sem tocar em nenhum campo original, preservando a trilha de auditoria.
+      allow update: if podeGerenciarEstoque()
+                     && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['estornado', 'estornadoPor', 'estornadoEm', 'estornoMovimentoId']);
+      allow delete: if false;
     }
 
     match /ppeDeliveries/{id} {

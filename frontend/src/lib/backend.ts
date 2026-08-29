@@ -433,6 +433,93 @@ export async function registrarEntrada(
 }
 
 // ---------------------------------------------------------------------
+// estornarEntrada — corrige uma entrada de estoque registrada por engano.
+// Não edita nem apaga a movimentação original (imutável por design, é o
+// que garante a auditoria) — cria uma movimentação de estorno que desfaz
+// o efeito no saldo, e só marca a original como "estornado" (rules
+// permitem só esses campos de marcação, nada do fato original muda).
+// ---------------------------------------------------------------------
+export async function estornarEntrada(movementId: string): Promise<{ estornoId: string }> {
+  const profile = await requireRole(['admin', 'almoxarifado'])
+
+  const movementRef = doc(db, 'inventoryMovements', movementId)
+  const movSnap = await getDoc(movementRef)
+  if (!movSnap.exists()) throw new AppError('not-found', 'Movimentação não encontrada.')
+  const mov = movSnap.data() as any
+
+  if (mov.tipo !== 'entrada') {
+    throw new AppError('invalid-argument', 'Só é possível estornar entradas de estoque.')
+  }
+  if (mov.estornado) {
+    throw new AppError('failed-precondition', 'Esta entrada já foi estornada.')
+  }
+
+  const inventoryRef = doc(db, 'inventory', mov.variantId as string)
+  const estornoRef = doc(collection(db, 'inventoryMovements'))
+
+  await runTransaction(db, async (tx) => {
+    const invSnap = await tx.get(inventoryRef)
+    const saldoAtual = invSnap.exists() ? (invSnap.data()!.quantidadeAtual as number) : 0
+    const ppeItemId = invSnap.exists() ? (invSnap.data()!.ppeItemId ?? null) : null
+    const novoSaldo = saldoAtual - (mov.quantidade as number)
+
+    if (novoSaldo < 0) {
+      throw new AppError(
+        'failed-precondition',
+        'Não é possível estornar: parte desta entrada já foi usada em entregas, e o estorno deixaria o estoque negativo.'
+      )
+    }
+
+    tx.set(inventoryRef, { obraId: mov.obraId, ppeItemId, quantidadeAtual: novoSaldo }, { merge: true })
+
+    tx.set(estornoRef, {
+      variantId: mov.variantId,
+      obraId: mov.obraId,
+      tipo: 'estorno_entrada',
+      quantidade: mov.quantidade,
+      data: serverTimestamp(),
+      usuarioId: profile.uid,
+      referenciaTipo: 'inventoryMovement',
+      referenciaId: movementId,
+      observacao: `Estorno da entrada registrada em ${toDateString(mov.data)}`,
+      createdAt: serverTimestamp(),
+    })
+    writeAudit(tx, {
+      usuarioId: profile.uid,
+      acao: 'INSERT',
+      modulo: 'inventoryMovements',
+      registroId: estornoRef.id,
+      dadosAnteriores: null,
+      dadosNovos: { variantId: mov.variantId, quantidade: mov.quantidade, referenciaId: movementId },
+    })
+
+    tx.update(movementRef, {
+      estornado: true,
+      estornadoPor: profile.uid,
+      estornadoEm: serverTimestamp(),
+      estornoMovimentoId: estornoRef.id,
+    })
+    writeAudit(tx, {
+      usuarioId: profile.uid,
+      acao: 'UPDATE',
+      modulo: 'inventoryMovements',
+      registroId: movementId,
+      dadosAnteriores: { estornado: false },
+      dadosNovos: { estornado: true, estornoMovimentoId: estornoRef.id },
+    })
+  })
+
+  return { estornoId: estornoRef.id }
+}
+
+function toDateString(value: unknown): string {
+  if (value && typeof value === 'object' && 'toDate' in (value as any)) {
+    return (value as any).toDate().toLocaleString('pt-BR')
+  }
+  return String(value ?? '')
+}
+
+// ---------------------------------------------------------------------
 // recalcularAlertas — equivalente a firebase/functions/src/alerts/recalcularAlertas.ts
 // Sem Cloud Scheduler (exige Blaze): roda sob demanda quando alguém com
 // permissão abre a tela de Alertas, em vez de a cada hora em background.

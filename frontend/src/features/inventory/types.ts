@@ -51,4 +51,5 @@ export type InventoryMovement = {
   usuario_nome: string | null
   ppe_nome: string
   sku_gerado: string | null
+  estornado: boolean
 }
