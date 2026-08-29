@@ -13,10 +13,16 @@ export function useAlerts() {
     setError(null)
 
     try {
-      const snap = await getDocs(
-        query(collection(db, 'alerts'), orderBy('gravidade', 'desc'), orderBy('dataGeracao', 'desc'))
-      )
-      const rows = snap.docs.map((d) => {
+      // Um só orderBy no servidor: regras que dependem de get() (ativo())
+      // combinadas com orderBy em 2 campos fazem o Firestore negar a query
+      // com "Missing or insufficient permissions" mesmo a regra estando
+      // correta — limitação conhecida do avaliador de Security Rules.
+      // Gravidade (critério principal) é ordenada aqui no cliente.
+      const snap = await getDocs(query(collection(db, 'alerts'), orderBy('dataGeracao', 'desc')))
+      const GRAVIDADE_ORDER: Record<string, number> = { alta: 0, media: 1 }
+      const rows = [...snap.docs]
+        .sort((a, b) => (GRAVIDADE_ORDER[a.data().gravidade] ?? 2) - (GRAVIDADE_ORDER[b.data().gravidade] ?? 2))
+        .map((d) => {
         const data = d.data() as any
         return {
           id: d.id,

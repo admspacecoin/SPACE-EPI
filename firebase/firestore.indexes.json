@@ -68,14 +68,6 @@
       ]
     },
     {
-      "collectionGroup": "alerts",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "gravidade", "order": "DESCENDING" },
-        { "fieldPath": "dataGeracao", "order": "DESCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "companies",
       "queryScope": "COLLECTION",
       "fields": [
