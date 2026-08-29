@@ -445,21 +445,29 @@ type NovoAlerta = {
   gravidade: Gravidade
 }
 
+async function withStep<T>(step: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new AppError('internal', `[${step}] ${msg}`)
+  }
+}
+
 export async function recalcularAlertas(): Promise<{ alertasAbertos: number }> {
   await requireRole(['admin', 'seguranca', 'almoxarifado'])
 
   const novosAlertas: NovoAlerta[] = []
 
-  const [itemsSnap, inventorySnap] = await Promise.all([
-    getDocs(collectionGroup(db, 'variants')),
-    getDocs(collection(db, 'inventory')),
-  ])
+  const [itemsSnap, inventorySnap] = await withStep('variants+inventory', () =>
+    Promise.all([getDocs(collectionGroup(db, 'variants')), getDocs(collection(db, 'inventory'))])
+  )
   const inventoryByVariant = new Map(inventorySnap.docs.map((d) => [d.id, d.data().quantidadeAtual as number]))
 
   for (const variantDoc of itemsSnap.docs) {
     const ppeItemRef = variantDoc.ref.parent.parent
     if (!ppeItemRef) continue
-    const ppeItemSnap = await getDoc(ppeItemRef)
+    const ppeItemSnap = await withStep(`get ppeItem ${ppeItemRef.id}`, () => getDoc(ppeItemRef))
     if (!ppeItemSnap.exists()) continue
     const estoqueMinimo = (ppeItemSnap.data()!.estoqueMinimo as number) ?? 0
     const saldo = inventoryByVariant.get(variantDoc.id) ?? 0
@@ -475,10 +483,9 @@ export async function recalcularAlertas(): Promise<{ alertasAbertos: number }> {
     }
   }
 
-  const [ppeItemsSnap, settingsSnap] = await Promise.all([
-    getDocs(collection(db, 'ppeItems')),
-    getDocs(collection(db, 'settings')),
-  ])
+  const [ppeItemsSnap, settingsSnap] = await withStep('ppeItems+settings', () =>
+    Promise.all([getDocs(collection(db, 'ppeItems')), getDocs(collection(db, 'settings'))])
+  )
   const settingsByObra = new Map(settingsSnap.docs.map((d) => [d.id, d.data()]))
   const hoje = new Date()
   hoje.setHours(0, 0, 0, 0)
@@ -502,7 +509,9 @@ export async function recalcularAlertas(): Promise<{ alertasAbertos: number }> {
     }
   }
 
-  const employeesSnap = await getDocs(query(collection(db, 'employees'), where('situacao', '!=', 'desligado')))
+  const employeesSnap = await withStep('employees', () =>
+    getDocs(query(collection(db, 'employees'), where('situacao', '!=', 'desligado')))
+  )
 
   for (const employeeDoc of employeesSnap.docs) {
     const employee = employeeDoc.data() as any
@@ -530,7 +539,9 @@ export async function recalcularAlertas(): Promise<{ alertasAbertos: number }> {
     }
   }
 
-  const abertosSnap = await getDocs(query(collection(db, 'alerts'), where('status', '==', 'aberto')))
+  const abertosSnap = await withStep('read alerts abertos', () =>
+    getDocs(query(collection(db, 'alerts'), where('status', '==', 'aberto')))
+  )
 
   let batch = writeBatch(db)
   const batches = [batch]
@@ -551,7 +562,9 @@ export async function recalcularAlertas(): Promise<{ alertasAbertos: number }> {
     nextBatch().set(ref, { ...alerta, status: 'aberto', dataGeracao: serverTimestamp(), dataResolucao: null })
   })
 
-  for (const b of batches) await b.commit()
+  await withStep(`commit batches (novos=${novosAlertas.length}, deletados=${abertosSnap.docs.length})`, async () => {
+    for (const b of batches) await b.commit()
+  })
 
   return { alertasAbertos: novosAlertas.length }
 }
