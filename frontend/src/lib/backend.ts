@@ -490,14 +490,21 @@ export async function recalcularAlertas(): Promise<{ alertasAbertos: number }> {
   const hoje = new Date()
   hoje.setHours(0, 0, 0, 0)
 
+  // eslint-disable-next-line no-console
+  console.log('[recalcularAlertas] ppeItems count:', ppeItemsSnap.docs.length, 'hoje:', hoje.toISOString())
+
   for (const itemDoc of ppeItemsSnap.docs) {
     const item = itemDoc.data() as any
+    // eslint-disable-next-line no-console
+    console.log('[recalcularAlertas] item', itemDoc.id, 'caValidade:', item.caValidade, 'obraId:', item.obraId)
     if (!item.caValidade) continue
     const settings = settingsByObra.get(item.obraId) as any
     const diasAlerta = settings?.diasAlertaCa ?? 30
     const validade = toDate(item.caValidade)
     const limite = new Date(hoje)
     limite.setDate(limite.getDate() + diasAlerta)
+    // eslint-disable-next-line no-console
+    console.log('[recalcularAlertas] validade:', validade.toISOString(), 'limite:', limite.toISOString(), 'diasAlerta:', diasAlerta)
 
     if (validade <= limite) {
       novosAlertas.push({
