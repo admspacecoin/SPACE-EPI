@@ -103,6 +103,7 @@ export function NovaEntregaWizard() {
         observacao: observacao.trim() || null,
         items: cart.map((i) => ({
           variantId: i.variantId,
+          ppeItemId: i.ppeItemId,
           quantidade: i.quantidade,
           motivo: i.motivo,
         })),

@@ -28,7 +28,7 @@ export function NewEntryForm({
     setError(null)
 
     const qtd = Number(quantidade)
-    if (!obraId || !variantId || Number.isNaN(qtd) || qtd <= 0) {
+    if (!obraId || !ppeItemId || !variantId || Number.isNaN(qtd) || qtd <= 0) {
       setError('Selecione o EPI, a variação e uma quantidade válida.')
       return
     }
@@ -37,6 +37,7 @@ export function NewEntryForm({
     try {
       await registrarEntradaBackend({
         variantId,
+        ppeItemId,
         obraId,
         quantidade: qtd,
         data,

@@ -42,7 +42,7 @@ export function ReturnForm({ onDone }: { onDone: () => void }) {
   async function handleSubmit() {
     setError(null)
     const qtd = Number(quantidade)
-    if (!employee || !variantId || Number.isNaN(qtd) || qtd <= 0) {
+    if (!employee || !ppeItemId || !variantId || Number.isNaN(qtd) || qtd <= 0) {
       setError('Selecione o colaborador, o item e uma quantidade válida.')
       return
     }
@@ -52,6 +52,7 @@ export function ReturnForm({ onDone }: { onDone: () => void }) {
       await registrarDevolucaoBackend({
         employeeId: employee.id,
         variantId,
+        ppeItemId,
         quantidade: qtd,
         motivo: motivo.trim() || null,
         condicao,

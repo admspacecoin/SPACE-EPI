@@ -159,7 +159,7 @@ export async function criarColaborador(input: CriarColaboradorInput): Promise<{ 
 // ---------------------------------------------------------------------
 // registrarEntrega — equivalente a firebase/functions/src/deliveries/registrarEntrega.ts
 // ---------------------------------------------------------------------
-export type DeliveryItemInput = { variantId: string; quantidade: number; motivo: string }
+export type DeliveryItemInput = { variantId: string; ppeItemId: string; quantidade: number; motivo: string }
 export type RegistrarEntregaInput = {
   employeeId: string
   setorResponsavelId?: string | null
@@ -176,8 +176,17 @@ export async function registrarEntrega(input: RegistrarEntregaInput): Promise<{ 
     throw new AppError('invalid-argument', 'A entrega precisa ter pelo menos um item.')
   }
   for (const item of items) {
-    if (!item.variantId || !Number.isInteger(item.quantidade) || item.quantidade <= 0 || !item.motivo) {
-      throw new AppError('invalid-argument', 'Cada item precisa de variantId, quantidade (> 0) e motivo.')
+    if (
+      !item.variantId ||
+      !item.ppeItemId ||
+      !Number.isInteger(item.quantidade) ||
+      item.quantidade <= 0 ||
+      !item.motivo
+    ) {
+      throw new AppError(
+        'invalid-argument',
+        'Cada item precisa de variantId, ppeItemId, quantidade (> 0) e motivo.'
+      )
     }
   }
 
@@ -258,7 +267,11 @@ export async function registrarEntrega(input: RegistrarEntregaInput): Promise<{ 
         dadosNovos: { variantId: item.variantId, quantidade: item.quantidade },
       })
 
-      tx.set(inventoryRefs[idx], { obraId: employee.obraId, quantidadeAtual: novosSaldos[idx] }, { merge: true })
+      tx.set(
+        inventoryRefs[idx],
+        { obraId: employee.obraId, ppeItemId: item.ppeItemId, quantidadeAtual: novosSaldos[idx] },
+        { merge: true }
+      )
     })
   })
 
@@ -272,6 +285,7 @@ export type Condicao = 'novo' | 'bom_estado' | 'danificado' | 'inutilizado'
 export type RegistrarDevolucaoInput = {
   employeeId: string
   variantId: string
+  ppeItemId: string
   quantidade: number
   motivo?: string | null
   condicao: Condicao
@@ -280,10 +294,13 @@ export type RegistrarDevolucaoInput = {
 
 export async function registrarDevolucao(input: RegistrarDevolucaoInput): Promise<{ returnId: string }> {
   const profile = await requireRole(['admin', 'almoxarifado'])
-  const { employeeId, variantId, quantidade, motivo, condicao, retornarAoEstoque } = input
+  const { employeeId, variantId, ppeItemId, quantidade, motivo, condicao, retornarAoEstoque } = input
 
-  if (!employeeId || !variantId || !Number.isInteger(quantidade) || quantidade <= 0) {
-    throw new AppError('invalid-argument', 'employeeId, variantId e quantidade (> 0) são obrigatórios.')
+  if (!employeeId || !variantId || !ppeItemId || !Number.isInteger(quantidade) || quantidade <= 0) {
+    throw new AppError(
+      'invalid-argument',
+      'employeeId, variantId, ppeItemId e quantidade (> 0) são obrigatórios.'
+    )
   }
 
   const employeeRef = doc(db, 'employees', employeeId)
@@ -326,7 +343,7 @@ export async function registrarDevolucao(input: RegistrarDevolucaoInput): Promis
     })
 
     if (retorna && novoSaldo !== null) {
-      tx.set(inventoryRef, { obraId, quantidadeAtual: novoSaldo }, { merge: true })
+      tx.set(inventoryRef, { obraId, ppeItemId, quantidadeAtual: novoSaldo }, { merge: true })
 
       const movementRef = doc(collection(db, 'inventoryMovements'))
       tx.set(movementRef, {
@@ -360,6 +377,7 @@ export async function registrarDevolucao(input: RegistrarDevolucaoInput): Promis
 // ---------------------------------------------------------------------
 export type RegistrarEntradaInput = {
   variantId: string
+  ppeItemId: string
   obraId: string
   quantidade: number
   data?: string
@@ -371,10 +389,13 @@ export async function registrarEntrada(
   input: RegistrarEntradaInput
 ): Promise<{ movementId: string; registradoPor: string }> {
   const profile = await requireRole(['admin', 'almoxarifado'])
-  const { variantId, obraId, quantidade, origem, observacao } = input
+  const { variantId, ppeItemId, obraId, quantidade, origem, observacao } = input
 
-  if (!variantId || !obraId || !Number.isInteger(quantidade) || quantidade <= 0) {
-    throw new AppError('invalid-argument', 'variantId, obraId e quantidade (> 0) são obrigatórios.')
+  if (!variantId || !ppeItemId || !obraId || !Number.isInteger(quantidade) || quantidade <= 0) {
+    throw new AppError(
+      'invalid-argument',
+      'variantId, ppeItemId, obraId e quantidade (> 0) são obrigatórios.'
+    )
   }
 
   const inventoryRef = doc(db, 'inventory', variantId)
@@ -385,7 +406,7 @@ export async function registrarEntrada(
     const saldoAtual = invSnap.exists() ? (invSnap.data()!.quantidadeAtual as number) : 0
     const novoSaldo = saldoAtual + quantidade
 
-    tx.set(inventoryRef, { obraId, quantidadeAtual: novoSaldo }, { merge: true })
+    tx.set(inventoryRef, { obraId, ppeItemId, quantidadeAtual: novoSaldo }, { merge: true })
 
     tx.set(movementRef, {
       variantId,
