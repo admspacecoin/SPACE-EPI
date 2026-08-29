@@ -9,11 +9,14 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  setDoc,
   where,
   writeBatch,
   type DocumentReference,
 } from 'firebase/firestore'
-import { auth, db } from './firebase'
+import { deleteApp, initializeApp } from 'firebase/app'
+import { createUserWithEmailAndPassword, getAuth, signOut as authSignOut } from 'firebase/auth'
+import { auth, db, firebaseConfig } from './firebase'
 import type { UserRole } from '../features/auth/AuthContext'
 
 /**
@@ -530,4 +533,40 @@ export async function recalcularAlertas(): Promise<{ alertasAbertos: number }> {
   for (const b of batches) await b.commit()
 
   return { alertasAbertos: novosAlertas.length }
+}
+
+// ---------------------------------------------------------------------
+// criarUsuarioAdmin — sem Cloud Function (onAuthUserCreate), um admin não
+// consegue criar a conta de outra pessoa usando a instância principal do
+// Auth (isso trocaria a sessão logada para a conta nova). O contorno
+// padrão para client-side é abrir um app Firebase secundário só para o
+// createUser, sem afetar a sessão do admin, e descartá-lo em seguida.
+// ---------------------------------------------------------------------
+export async function criarUsuarioAdmin(input: {
+  email: string
+  senha: string
+  nome: string
+  perfil: UserRole
+}): Promise<{ uid: string }> {
+  await requireRole(['admin'])
+
+  const secondaryApp = initializeApp(firebaseConfig, `admin-create-${Date.now()}`)
+  try {
+    const secondaryAuth = getAuth(secondaryApp)
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, input.email, input.senha)
+    const uid = cred.user.uid
+    await authSignOut(secondaryAuth)
+
+    await setDoc(doc(db, 'users', uid), {
+      nome: input.nome.trim(),
+      email: input.email.trim(),
+      perfil: input.perfil,
+      status: 'ativo',
+      createdAt: serverTimestamp(),
+    })
+
+    return { uid }
+  } finally {
+    await deleteApp(secondaryApp)
+  }
 }

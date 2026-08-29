@@ -155,10 +155,13 @@ service cloud.firestore {
                             .hasOnly(['nome']));
       // Sem onAuthUserCreate: o próprio cliente cria seu perfil no primeiro
       // login (ver AuthContext), sempre com os valores padrão travados aqui
-      // — ninguém se autopromove no próprio cadastro.
-      allow create: if request.auth != null && request.auth.uid == uid
-                     && request.resource.data.perfil == 'consulta'
-                     && request.resource.data.status == 'ativo';
+      // — ninguém se autopromove no próprio cadastro. Um admin também pode
+      // criar o perfil de outra pessoa direto (tela de Administração —
+      // useCreateUser no frontend), com qualquer perfil/status.
+      allow create: if isAdmin()
+                     || (request.auth != null && request.auth.uid == uid
+                         && request.resource.data.perfil == 'consulta'
+                         && request.resource.data.status == 'ativo');
       allow delete: if false;
     }
 
