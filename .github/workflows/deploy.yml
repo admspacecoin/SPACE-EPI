@@ -51,6 +51,9 @@ jobs:
           VITE_USE_FIREBASE_EMULATORS: 'false'
 
       - name: Deploy to Firebase Hosting
-        run: npx firebase-tools deploy --only hosting --project space-epi --token "$FIREBASE_TOKEN"
-        env:
-          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPACE_EPI }}
+          projectId: space-epi
+          channelId: live
