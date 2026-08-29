@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import clsx from 'clsx'
-import { supabase } from '../lib/supabase'
+import { doc, updateDoc } from 'firebase/firestore'
+import { db } from '../lib/firebase'
+import { recalcularAlertas as recalcularAlertasBackend } from '../lib/backend'
 import { PageHeader } from '../components/PageHeader'
 import { StatusBadge } from '../components/StatusBadge'
 import { useAuth } from '../features/auth/AuthContext'
@@ -47,20 +49,27 @@ export default function Alertas() {
 
   async function updateStatus(id: string, newStatus: AlertStatus) {
     setActionError(null)
-    const patch: Record<string, unknown> = { status: newStatus }
-    patch.data_resolucao = newStatus === 'resolvido' ? new Date().toISOString() : null
-    const { error: updateError } = await supabase.from('alerts').update(patch).eq('id', id)
-    if (updateError) setActionError(updateError.message)
-    else reload()
+    try {
+      await updateDoc(doc(db, 'alerts', id), {
+        status: newStatus,
+        dataResolucao: newStatus === 'resolvido' ? new Date().toISOString() : null,
+      })
+      reload()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Falha ao atualizar o alerta.')
+    }
   }
 
   async function recalcular() {
     setRecalculating(true)
     setActionError(null)
-    const { error: rpcError } = await supabase.rpc('recalcular_alertas')
+    try {
+      await recalcularAlertasBackend()
+      reload()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Falha ao recalcular alertas.')
+    }
     setRecalculating(false)
-    if (rpcError) setActionError(rpcError.message)
-    else reload()
   }
 
   return (

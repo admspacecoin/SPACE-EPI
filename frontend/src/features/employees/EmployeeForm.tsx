@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, serverTimestamp, writeBatch } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
+import { criarColaborador as criarColaboradorBackend } from '../../lib/backend'
+import { useAuth } from '../auth/AuthContext'
 import { useCurrentObra } from '../../lib/useCurrentObra'
 import { PhotoUpload } from './PhotoUpload'
 import { useEmployeeFormOptions } from './useEmployeeFormOptions'
@@ -45,6 +48,7 @@ function toFormState(e?: Employee): FormState {
 
 export function EmployeeForm({ employee, onSaved }: EmployeeFormProps) {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const { obraId } = useCurrentObra()
   const { companies, sectors, jobFunctions, loading: optionsLoading } = useEmployeeFormOptions(obraId)
 
@@ -67,45 +71,71 @@ export function EmployeeForm({ employee, onSaved }: EmployeeFormProps) {
 
     setSaving(true)
 
+    // Documentos no Firestore usam camelCase (ver DATA_MODEL.md); os tipos
+    // internos do app continuam em snake_case para minimizar mudanças no
+    // resto do código já escrito para o Supabase.
     const payload = {
-      obra_id: obraId,
-      nome_completo: form.nome_completo.trim(),
+      obraId: obraId,
+      nomeCompleto: form.nome_completo.trim(),
       matricula: form.matricula.trim(),
       cpf: form.cpf.trim() || null,
-      company_id: form.company_id || null,
-      sector_id: form.sector_id || null,
-      job_function_id: form.job_function_id || null,
-      data_admissao: form.data_admissao || null,
-      data_desligamento: form.situacao === 'desligado' ? form.data_desligamento || null : null,
-      responsavel_imediato: form.responsavel_imediato.trim() || null,
+      companyId: form.company_id || null,
+      sectorId: form.sector_id || null,
+      jobFunctionId: form.job_function_id || null,
+      dataAdmissao: form.data_admissao || null,
+      dataDesligamento: form.situacao === 'desligado' ? form.data_desligamento || null : null,
+      responsavelImediato: form.responsavel_imediato.trim() || null,
       contato: form.contato.trim() || null,
       situacao: form.situacao,
-      foto_url: form.foto_url,
+      fotoPath: form.foto_url,
     }
 
-    if (employee) {
-      const { error: updateError } = await supabase.from('employees').update(payload).eq('id', employee.id)
+    try {
+      if (employee) {
+        // Edição: sem risco de duplicar matrícula na maioria dos casos de uso
+        // (raramente alguém edita a matrícula em si), então isso pode ir
+        // direto pelo cliente — a RLS (Security Rules) já garante que só
+        // admin/segurança editam. Sem trigger de servidor, o próprio cliente
+        // grava o histórico de situação e a auditoria, na mesma escrita.
+        const employeeRef = doc(db, 'employees', employee.id)
+        const batch = writeBatch(db)
+        batch.update(employeeRef, { ...payload, updatedBy: user?.uid ?? null, updatedAt: serverTimestamp() })
+
+        if (employee.situacao !== form.situacao) {
+          const histRef = doc(collection(employeeRef, 'statusHistory'))
+          batch.set(histRef, {
+            situacaoAnterior: employee.situacao,
+            situacaoNova: form.situacao,
+            usuarioId: user?.uid ?? null,
+            data: serverTimestamp(),
+          })
+        }
+
+        const auditRef = doc(collection(db, 'auditLogs'))
+        batch.set(auditRef, {
+          usuarioId: user?.uid ?? null,
+          acao: 'UPDATE',
+          modulo: 'employees',
+          registroId: employee.id,
+          dadosAnteriores: employee,
+          dadosNovos: payload,
+          data: serverTimestamp(),
+        })
+
+        await batch.commit()
+        setSaving(false)
+        onSaved?.(employee.id)
+      } else {
+        // Criação: precisa checar matrícula única por obra dentro de uma
+        // transação (o Firestore não tem UNIQUE constraint) — ver criarColaborador.
+        const result = await criarColaboradorBackend(payload)
+        setSaving(false)
+        onSaved?.(result.employeeId)
+        navigate(`/colaboradores/${result.employeeId}`)
+      }
+    } catch (err) {
       setSaving(false)
-      if (updateError) {
-        setError(traduzirErro(updateError.message))
-        return
-      }
-      onSaved?.(employee.id)
-    } else {
-      const { data, error: insertError } = await supabase
-        .from('employees')
-        .insert(payload)
-        .select('id')
-        .single()
-      setSaving(false)
-      if (insertError) {
-        setError(traduzirErro(insertError.message))
-        return
-      }
-      if (data) {
-        onSaved?.(data.id)
-        navigate(`/colaboradores/${data.id}`)
-      }
+      setError(traduzirErro(err instanceof Error ? err.message : 'Falha ao salvar colaborador.'))
     }
   }
 
@@ -282,7 +312,7 @@ export function EmployeeForm({ employee, onSaved }: EmployeeFormProps) {
 }
 
 function traduzirErro(msg: string): string {
-  if (msg.includes('duplicate key') && msg.includes('matricula')) {
+  if (msg.includes('já existe um colaborador') || msg.includes('already-exists')) {
     return 'Já existe um colaborador com essa matrícula nesta obra.'
   }
   return msg

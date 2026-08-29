@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, getDocs, query, where } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import { DELIVERY_REASON_LABEL, type DeliveryReason } from '../deliveries/types'
+import { createResolverCaches, resolveSectorName, resolveUserName, resolveVariantInfo, toDateString } from '../deliveries/resolveDeliveryRow'
 
 export type DeliveryHistoryRow = {
   id: string
@@ -22,45 +24,52 @@ export function useEmployeeDeliveryHistory(employeeId: string) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!employeeId) return
     let cancelled = false
     async function load() {
       setLoading(true)
       setError(null)
-
-      const { data, error: fetchError } = await supabase
-        .from('ppe_delivery_items')
-        .select(
-          `id, quantidade, motivo,
-           ppe_variants ( sku_gerado, ppe_items ( id, nome ) ),
-           ppe_deliveries!inner ( data, hora, employee_id, users ( nome ), sectors ( nome ) )`
+      try {
+        const deliveriesSnap = await getDocs(
+          query(collection(db, 'ppeDeliveries'), where('employeeId', '==', employeeId))
         )
-        .eq('ppe_deliveries.employee_id', employeeId)
+        const caches = createResolverCaches()
 
-      if (cancelled) return
+        const parsed: DeliveryHistoryRow[] = []
+        for (const deliveryDoc of deliveriesSnap.docs) {
+          const delivery = deliveryDoc.data() as any
+          const itemsSnap = await getDocs(collection(db, 'ppeDeliveries', deliveryDoc.id, 'items'))
+          const [responsavelNome, setorNome] = await Promise.all([
+            resolveUserName(caches, delivery.usuarioId ?? null),
+            resolveSectorName(caches, delivery.setorResponsavelId ?? null),
+          ])
+          const dataStr = toDateString(delivery.data)
 
-      if (fetchError) {
-        setError(fetchError.message)
-        setLoading(false)
-        return
+          for (const itemDoc of itemsSnap.docs) {
+            const item = itemDoc.data() as any
+            const variantInfo = await resolveVariantInfo(caches, item.variantId)
+            parsed.push({
+              id: itemDoc.id,
+              data: dataStr.slice(0, 10),
+              hora: dataStr.slice(11, 16) || '00:00',
+              ppeItemId: variantInfo.ppeItemId,
+              ppeNome: variantInfo.ppeNome,
+              variantLabel: variantInfo.sku,
+              quantidade: item.quantidade,
+              motivo: item.motivo,
+              motivoLabel: DELIVERY_REASON_LABEL[item.motivo as DeliveryReason] ?? item.motivo,
+              responsavelNome,
+              setorNome,
+            })
+          }
+        }
+
+        if (cancelled) return
+        parsed.sort((a, b) => (a.data + a.hora < b.data + b.hora ? 1 : -1))
+        setRows(parsed)
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Falha ao carregar histórico.')
       }
-
-      const parsed: DeliveryHistoryRow[] = (data ?? []).map((row: any) => ({
-        id: row.id,
-        data: row.ppe_deliveries?.data,
-        hora: row.ppe_deliveries?.hora,
-        ppeItemId: row.ppe_variants?.ppe_items?.id ?? '',
-        ppeNome: row.ppe_variants?.ppe_items?.nome ?? '—',
-        variantLabel: row.ppe_variants?.sku_gerado ?? '—',
-        quantidade: row.quantidade,
-        motivo: row.motivo,
-        motivoLabel: DELIVERY_REASON_LABEL[row.motivo as DeliveryReason] ?? row.motivo,
-        responsavelNome: row.ppe_deliveries?.users?.nome ?? '—',
-        setorNome: row.ppe_deliveries?.sectors?.nome ?? '—',
-      }))
-
-      parsed.sort((a, b) => (a.data + a.hora < b.data + b.hora ? 1 : -1))
-
-      setRows(parsed)
       setLoading(false)
     }
     load()

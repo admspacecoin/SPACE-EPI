@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, getDocs, orderBy, query } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import { AUDIT_ACTIONS, AUDIT_MODULES, useAuditLogs, type AuditFilters, type AuditLog } from './useAuditLogs'
 
 const ACTION_LABEL: Record<string, string> = { INSERT: 'Criação', UPDATE: 'Alteração', DELETE: 'Exclusão' }
 const MODULE_LABEL: Record<string, string> = {
   employees: 'Colaboradores',
-  ppe_items: 'EPIs',
-  inventory_movements: 'Movimentações de Estoque',
-  ppe_deliveries: 'Entregas',
+  ppeItems: 'EPIs',
+  inventoryMovements: 'Movimentações de Estoque',
+  ppeDeliveries: 'Entregas',
   users: 'Usuários',
 }
 
@@ -24,11 +25,9 @@ export function AuditTab() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   useEffect(() => {
-    supabase
-      .from('users')
-      .select('id, nome')
-      .order('nome')
-      .then(({ data }) => setUserOptions(data ?? []))
+    getDocs(query(collection(db, 'users'), orderBy('nome'))).then((snap) =>
+      setUserOptions(snap.docs.map((d) => ({ id: d.id, nome: d.data().nome as string })))
+    )
   }, [])
 
   function set<K extends keyof AuditFilters>(key: K, value: AuditFilters[K]) {

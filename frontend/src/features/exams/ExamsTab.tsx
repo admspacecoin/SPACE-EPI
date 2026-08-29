@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { supabase } from '../../lib/supabase'
+import { addDoc, collection, getDocs, orderBy, query } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import { useCurrentObra } from '../../lib/useCurrentObra'
 import { useObraSettings } from '../../lib/useObraSettings'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -43,14 +44,28 @@ export function ExamsTab({ employeeId }: { employeeId: string }) {
 
   async function load() {
     setLoading(true)
-    const { data, error: fetchError } = await supabase
-      .from('exams')
-      .select('id, employee_id, tipo, data_exame, resultado, data_proximo_exame, observacoes, created_at')
-      .eq('employee_id', employeeId)
-      .order('data_exame', { ascending: false })
-
-    if (fetchError) setError(fetchError.message)
-    else setExams((data ?? []) as Exam[])
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'employees', employeeId, 'exams'), orderBy('dataExame', 'desc'))
+      )
+      setExams(
+        snap.docs.map((d) => {
+          const data = d.data() as any
+          return {
+            id: d.id,
+            employee_id: employeeId,
+            tipo: data.tipo,
+            data_exame: data.dataExame,
+            resultado: data.resultado,
+            data_proximo_exame: data.dataProximoExame ?? null,
+            observacoes: data.observacoes ?? null,
+            created_at: data.createdAt,
+          } as Exam
+        })
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao carregar exames.')
+    }
     setLoading(false)
   }
 
@@ -64,20 +79,23 @@ export function ExamsTab({ employeeId }: { employeeId: string }) {
     setError(null)
     setSaving(true)
 
-    const { error: insertError } = await supabase.from('exams').insert({
-      employee_id: employeeId,
-      tipo: draft.tipo,
-      data_exame: draft.data_exame,
-      resultado: draft.resultado,
-      data_proximo_exame: draft.data_proximo_exame || null,
-      observacoes: draft.observacoes.trim() || null,
-    })
-
-    setSaving(false)
-    if (insertError) {
-      setError(insertError.message)
+    try {
+      await addDoc(collection(db, 'employees', employeeId, 'exams'), {
+        tipo: draft.tipo,
+        dataExame: draft.data_exame,
+        resultado: draft.resultado,
+        dataProximoExame: draft.data_proximo_exame || null,
+        observacoes: draft.observacoes.trim() || null,
+        usuarioId: null,
+        createdAt: new Date().toISOString(),
+      })
+    } catch (err) {
+      setSaving(false)
+      setError(err instanceof Error ? err.message : 'Falha ao registrar exame.')
       return
     }
+
+    setSaving(false)
     setDraft(emptyDraft())
     setShowForm(false)
     await load()

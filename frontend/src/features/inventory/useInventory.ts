@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import type { InventoryRow } from './types'
 
 export function useInventory(obraId: string | null | undefined) {
@@ -12,43 +13,53 @@ export function useInventory(obraId: string | null | undefined) {
     setLoading(true)
     setError(null)
 
-    const { data, error: fetchError } = await supabase
-      .from('inventory')
-      .select(
-        `variant_id, quantidade_atual,
-         ppe_variants!inner (
-           id, sku_gerado, status, ppe_item_id,
-           ppe_items!inner ( nome, codigo_interno, estoque_minimo, unidade_medida ),
-           ppe_variant_values ( ppe_attribute_values ( valor, ppe_attributes ( nome ) ) )
-         )`
+    try {
+      const invSnap = await getDocs(query(collection(db, 'inventory'), where('obraId', '==', obraId)))
+
+      // Cache simples de ppeItems já buscados, pra não repetir leitura por variação
+      const itemCache = new Map<string, any>()
+
+      const parsed: InventoryRow[] = await Promise.all(
+        invSnap.docs.map(async (invDoc) => {
+          const inv = invDoc.data()
+          const variantId = invDoc.id
+          const ppeItemId = inv.ppeItemId as string
+
+          if (!itemCache.has(ppeItemId)) {
+            const itemSnap = await getDoc(doc(db, 'ppeItems', ppeItemId))
+            itemCache.set(ppeItemId, itemSnap.exists() ? itemSnap.data() : null)
+          }
+          const item = itemCache.get(ppeItemId)
+
+          const variantSnap = await getDoc(doc(db, 'ppeItems', ppeItemId, 'variants', variantId))
+          const variant = variantSnap.exists() ? variantSnap.data() : null
+
+          return {
+            variant_id: variantId,
+            quantidade_atual: inv.quantidadeAtual ?? 0,
+            sku_gerado: variant?.skuGerado ?? null,
+            variant_status: variant?.status ?? 'ativo',
+            ppe_item_id: ppeItemId,
+            ppe_nome: item?.nome ?? '—',
+            codigo_interno: item?.codigoInterno ?? null,
+            estoque_minimo: item?.estoqueMinimo ?? 0,
+            unidade_medida: item?.unidadeMedida ?? 'UN',
+            labelValues: (variant?.attributeValues ?? []).map((v: any) => ({
+              attribute_nome: v.attributeNome,
+              valor: v.valor,
+            })),
+          } as InventoryRow
+        })
       )
-      .eq('obra_id', obraId)
 
-    if (fetchError) {
-      setError(fetchError.message)
-      setLoading(false)
-      return
+      parsed.sort(
+        (a, b) => a.ppe_nome.localeCompare(b.ppe_nome) || (a.sku_gerado ?? '').localeCompare(b.sku_gerado ?? '')
+      )
+
+      setRows(parsed)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao carregar o estoque.')
     }
-
-    const parsed: InventoryRow[] = (data ?? []).map((row: any) => ({
-      variant_id: row.variant_id,
-      quantidade_atual: row.quantidade_atual,
-      sku_gerado: row.ppe_variants?.sku_gerado ?? null,
-      variant_status: row.ppe_variants?.status ?? 'ativo',
-      ppe_item_id: row.ppe_variants?.ppe_item_id,
-      ppe_nome: row.ppe_variants?.ppe_items?.nome ?? '—',
-      codigo_interno: row.ppe_variants?.ppe_items?.codigo_interno ?? null,
-      estoque_minimo: row.ppe_variants?.ppe_items?.estoque_minimo ?? 0,
-      unidade_medida: row.ppe_variants?.ppe_items?.unidade_medida ?? 'UN',
-      labelValues: (row.ppe_variants?.ppe_variant_values ?? []).map((vv: any) => ({
-        attribute_nome: vv.ppe_attribute_values?.ppe_attributes?.nome ?? '',
-        valor: vv.ppe_attribute_values?.valor ?? '',
-      })),
-    }))
-
-    parsed.sort((a, b) => a.ppe_nome.localeCompare(b.ppe_nome) || (a.sku_gerado ?? '').localeCompare(b.sku_gerado ?? ''))
-
-    setRows(parsed)
     setLoading(false)
   }, [obraId])
 

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import { DELIVERY_REASON_LABEL, type DeliveryReason } from '../deliveries/types'
+import { createResolverCaches, resolveUserName, resolveVariantInfo, toDateString } from '../deliveries/resolveDeliveryRow'
 
 export type DeliveryReportRow = {
   id: string
@@ -33,51 +35,81 @@ export function useDeliveryReport(obraId: string | null | undefined) {
     async function load() {
       setLoading(true)
       setError(null)
-      const { data, error: fetchError } = await supabase
-        .from('ppe_delivery_items')
-        .select(
-          `id, quantidade, motivo,
-           ppe_variants ( sku_gerado, ppe_items ( id, nome ) ),
-           ppe_deliveries!inner (
-             data, hora, obra_id,
-             employees ( id, nome_completo, company_id, companies ( nome ) ),
-             sectors ( id, nome ),
-             users ( nome )
-           )`
-        )
-        .eq('ppe_deliveries.obra_id', obraId)
+      try {
+        const deliveriesSnap = await getDocs(query(collection(db, 'ppeDeliveries'), where('obraId', '==', obraId)))
+        const caches = createResolverCaches()
+        const employeeCache = new Map<string, any>()
+        const companyCache = new Map<string, string>()
 
-      if (cancelled) return
+        const parsed: DeliveryReportRow[] = []
 
-      if (fetchError) {
-        setError(fetchError.message)
-        setLoading(false)
-        return
+        for (const deliveryDoc of deliveriesSnap.docs) {
+          const delivery = deliveryDoc.data() as any
+          const dataStr = toDateString(delivery.data)
+
+          if (!employeeCache.has(delivery.employeeId)) {
+            const empSnap = await getDoc(doc(db, 'employees', delivery.employeeId))
+            employeeCache.set(delivery.employeeId, empSnap.exists() ? empSnap.data() : null)
+          }
+          const employee = employeeCache.get(delivery.employeeId)
+
+          let companyNome = '—'
+          if (employee?.companyId) {
+            if (!companyCache.has(employee.companyId)) {
+              const compSnap = await getDoc(doc(db, 'companies', employee.companyId))
+              companyCache.set(employee.companyId, compSnap.exists() ? compSnap.data().nome : '—')
+            }
+            companyNome = companyCache.get(employee.companyId)!
+          }
+
+          const sectorNome = delivery.setorResponsavelId
+            ? await resolveSectorNameLocal(delivery.setorResponsavelId)
+            : '—'
+          const responsavelNome = await resolveUserName(caches, delivery.usuarioId ?? null)
+
+          const itemsSnap = await getDocs(collection(db, 'ppeDeliveries', deliveryDoc.id, 'items'))
+          for (const itemDoc of itemsSnap.docs) {
+            const item = itemDoc.data() as any
+            const variantInfo = await resolveVariantInfo(caches, item.variantId)
+            parsed.push({
+              id: itemDoc.id,
+              data: dataStr.slice(0, 10),
+              hora: dataStr.slice(11, 16) || '00:00',
+              employeeId: delivery.employeeId,
+              employeeNome: employee?.nomeCompleto ?? '—',
+              companyId: employee?.companyId ?? null,
+              companyNome,
+              sectorId: delivery.setorResponsavelId ?? null,
+              sectorNome,
+              ppeItemId: variantInfo.ppeItemId,
+              ppeNome: variantInfo.ppeNome,
+              variantLabel: variantInfo.sku,
+              quantidade: item.quantidade,
+              motivo: item.motivo,
+              motivoLabel: DELIVERY_REASON_LABEL[item.motivo as DeliveryReason] ?? item.motivo,
+              responsavelNome,
+            })
+          }
+        }
+
+        if (cancelled) return
+        parsed.sort((a, b) => (a.data + a.hora < b.data + b.hora ? 1 : -1))
+        setRows(parsed)
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Falha ao carregar relatório.')
       }
-
-      const parsed: DeliveryReportRow[] = (data ?? []).map((row: any) => ({
-        id: row.id,
-        data: row.ppe_deliveries?.data,
-        hora: row.ppe_deliveries?.hora,
-        employeeId: row.ppe_deliveries?.employees?.id ?? '',
-        employeeNome: row.ppe_deliveries?.employees?.nome_completo ?? '—',
-        companyId: row.ppe_deliveries?.employees?.company_id ?? null,
-        companyNome: row.ppe_deliveries?.employees?.companies?.nome ?? '—',
-        sectorId: row.ppe_deliveries?.sectors?.id ?? null,
-        sectorNome: row.ppe_deliveries?.sectors?.nome ?? '—',
-        ppeItemId: row.ppe_variants?.ppe_items?.id ?? '',
-        ppeNome: row.ppe_variants?.ppe_items?.nome ?? '—',
-        variantLabel: row.ppe_variants?.sku_gerado ?? '—',
-        quantidade: row.quantidade,
-        motivo: row.motivo,
-        motivoLabel: DELIVERY_REASON_LABEL[row.motivo as DeliveryReason] ?? row.motivo,
-        responsavelNome: row.ppe_deliveries?.users?.nome ?? '—',
-      }))
-
-      parsed.sort((a, b) => (a.data + a.hora < b.data + b.hora ? 1 : -1))
-      setRows(parsed)
       setLoading(false)
     }
+
+    const sectorNameCache = new Map<string, string>()
+    async function resolveSectorNameLocal(sectorId: string) {
+      if (!sectorNameCache.has(sectorId)) {
+        const snap = await getDoc(doc(db, 'sectors', sectorId))
+        sectorNameCache.set(sectorId, snap.exists() ? snap.data().nome : '—')
+      }
+      return sectorNameCache.get(sectorId)!
+    }
+
     load()
     return () => {
       cancelled = true

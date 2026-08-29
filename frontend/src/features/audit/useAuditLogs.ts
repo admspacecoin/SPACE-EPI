@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 
 export type AuditLog = {
   id: string
@@ -14,7 +15,8 @@ export type AuditLog = {
   dados_novos: Record<string, unknown> | null
 }
 
-export const AUDIT_MODULES = ['employees', 'ppe_items', 'inventory_movements', 'ppe_deliveries', 'users']
+// Nomes das coleções tal como registrados pelas Cloud Functions (index.ts)
+export const AUDIT_MODULES = ['employees', 'ppeItems', 'inventoryMovements', 'ppeDeliveries', 'users']
 export const AUDIT_ACTIONS = ['INSERT', 'UPDATE', 'DELETE']
 
 export type AuditFilters = {
@@ -36,41 +38,64 @@ export function useAuditLogs(filters: AuditFilters) {
       setLoading(true)
       setError(null)
 
-      let query = supabase
-        .from('audit_logs')
-        .select('id, usuario_id, data, acao, modulo, registro_tipo, registro_id, dados_anteriores, dados_novos, users(nome)')
-        .order('data', { ascending: false })
-        .limit(200)
+      try {
+        // O Firestore não combina bem múltiplos filtros de igualdade + range
+        // sem índices específicos para cada combinação. Aplicamos o filtro de
+        // igualdade mais seletivo direto na query (usuário, senão módulo) e
+        // filtramos o restante (ação, período) em memória — o volume de
+        // auditoria de uma obra não justifica a complexidade de manter um
+        // índice para cada combinação possível.
+        const constraints = [] as any[]
+        if (filters.usuarioId) constraints.push(where('usuarioId', '==', filters.usuarioId))
+        else if (filters.modulo) constraints.push(where('modulo', '==', filters.modulo))
 
-      if (filters.usuarioId) query = query.eq('usuario_id', filters.usuarioId)
-      if (filters.modulo) query = query.eq('modulo', filters.modulo)
-      if (filters.acao) query = query.eq('acao', filters.acao)
-      if (filters.dataInicio) query = query.gte('data', filters.dataInicio)
-      if (filters.dataFim) query = query.lte('data', filters.dataFim + 'T23:59:59')
+        const q = query(collection(db, 'auditLogs'), ...constraints, orderBy('data', 'desc'), limit(200))
+        const snap = await getDocs(q)
+        if (cancelled) return
 
-      const { data, error: fetchError } = await query
-      if (cancelled) return
+        const userCache = new Map<string, string>()
 
-      if (fetchError) {
-        setError(fetchError.message)
-        setLoading(false)
-        return
+        const rows = await Promise.all(
+          snap.docs.map(async (d) => {
+            const row = d.data() as any
+            const dataStr = toDateString(row.data)
+
+            let usuarioNome = 'Sistema'
+            if (row.usuarioId) {
+              if (!userCache.has(row.usuarioId)) {
+                const userSnap = await getDoc(doc(db, 'users', row.usuarioId))
+                userCache.set(row.usuarioId, userSnap.exists() ? userSnap.data().nome : 'Usuário removido')
+              }
+              usuarioNome = userCache.get(row.usuarioId)!
+            }
+
+            return {
+              id: d.id,
+              usuario_id: row.usuarioId ?? null,
+              usuario_nome: usuarioNome,
+              data: dataStr,
+              acao: row.acao,
+              modulo: row.modulo,
+              registro_tipo: row.modulo,
+              registro_id: row.registroId ?? null,
+              dados_anteriores: row.dadosAnteriores ?? null,
+              dados_novos: row.dadosNovos ?? null,
+            } as AuditLog
+          })
+        )
+
+        const filtered = rows.filter((r) => {
+          if (filters.modulo && filters.usuarioId && r.modulo !== filters.modulo) return false
+          if (filters.acao && r.acao !== filters.acao) return false
+          if (filters.dataInicio && r.data < filters.dataInicio) return false
+          if (filters.dataFim && r.data > filters.dataFim + 'T23:59:59') return false
+          return true
+        })
+
+        setLogs(filtered)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Falha ao carregar auditoria.')
       }
-
-      setLogs(
-        (data ?? []).map((row: any) => ({
-          id: row.id,
-          usuario_id: row.usuario_id,
-          usuario_nome: row.users?.nome ?? 'Sistema',
-          data: row.data,
-          acao: row.acao,
-          modulo: row.modulo,
-          registro_tipo: row.registro_tipo,
-          registro_id: row.registro_id,
-          dados_anteriores: row.dados_anteriores,
-          dados_novos: row.dados_novos,
-        }))
-      )
       setLoading(false)
     }
     load()
@@ -80,4 +105,11 @@ export function useAuditLogs(filters: AuditFilters) {
   }, [filters.usuarioId, filters.modulo, filters.acao, filters.dataInicio, filters.dataFim])
 
   return { logs, loading, error }
+}
+
+function toDateString(value: unknown): string {
+  if (value && typeof value === 'object' && 'toDate' in (value as any)) {
+    return (value as any).toDate().toISOString()
+  }
+  return String(value ?? '')
 }

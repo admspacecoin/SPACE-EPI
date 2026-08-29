@@ -26,3 +26,12 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Firebase CLI
+.firebase/
+
+# Build cache
+*.tsbuildinfo
+
+# Material de origem da migração (já aplicado ao repo, não precisa versionar)
+docs/

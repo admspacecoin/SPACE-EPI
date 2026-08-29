@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { supabase } from '../../lib/supabase'
-import { useAuth } from '../auth/AuthContext'
+import { registrarEntrada as registrarEntradaBackend } from '../../lib/backend'
 import { usePpePicker } from './usePpePicker'
 
 export function NewEntryForm({
@@ -10,7 +9,6 @@ export function NewEntryForm({
   obraId: string | null | undefined
   onDone: () => void
 }) {
-  const { profile } = useAuth()
   const { items, loading: itemsLoading } = usePpePicker(obraId)
 
   const [ppeItemId, setPpeItemId] = useState('')
@@ -36,22 +34,21 @@ export function NewEntryForm({
     }
 
     setSaving(true)
-    const { error: insertError } = await supabase.from('inventory_movements').insert({
-      variant_id: variantId,
-      obra_id: obraId,
-      tipo: 'entrada',
-      quantidade: qtd,
-      data,
-      usuario_id: profile?.id,
-      origem: origem.trim() || null,
-      observacao: observacao.trim() || null,
-    })
-    setSaving(false)
-
-    if (insertError) {
-      setError(insertError.message)
+    try {
+      await registrarEntradaBackend({
+        variantId,
+        obraId,
+        quantidade: qtd,
+        data,
+        origem: origem.trim() || undefined,
+        observacao: observacao.trim() || undefined,
+      })
+    } catch (err) {
+      setSaving(false)
+      setError(err instanceof Error ? err.message : 'Falha ao registrar a entrada.')
       return
     }
+    setSaving(false)
 
     setPpeItemId('')
     setVariantId('')

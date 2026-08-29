@@ -1,5 +1,15 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { supabase } from '../../lib/supabase'
+import {
+  addDoc,
+  collection,
+  doc,
+  getDocs,
+  orderBy,
+  query,
+  updateDoc,
+  where,
+} from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 
 export type CatalogField = {
   key: string
@@ -11,11 +21,12 @@ export type CatalogField = {
 type Row = { id: string; status: 'ativo' | 'inativo'; [key: string]: unknown }
 
 type CatalogManagerProps = {
+  /** Nome da coleção no Firestore (camelCase — ex: "companies", "jobFunctions") */
   table: string
   title: string
   subtitle?: string
   fields: CatalogField[]
-  /** Quando true, filtra/insere sempre com obra_id = obraId (empresas e setores). */
+  /** Quando true, filtra/insere sempre com obraId = obraId (empresas e setores). */
   obraScoped?: boolean
   obraId?: string | null
 }
@@ -42,11 +53,14 @@ export function CatalogManager({
   async function load() {
     if (obraScoped && !obraId) return
     setLoading(true)
-    let query = supabase.from(table).select('*').order(fields[0].key)
-    if (obraScoped && obraId) query = query.eq('obra_id', obraId)
-    const { data, error: fetchError } = await query
-    if (fetchError) setError(fetchError.message)
-    else setRows((data ?? []) as Row[])
+    try {
+      const constraints = obraScoped && obraId ? [where('obraId', '==', obraId)] : []
+      const q = query(collection(db, table), ...constraints, orderBy(fields[0].key))
+      const snap = await getDocs(q)
+      setRows(snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) }) as Row))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao carregar.')
+    }
     setLoading(false)
   }
 
@@ -60,13 +74,14 @@ export function CatalogManager({
     setError(null)
     setCreating(true)
     const payload: Record<string, unknown> = { ...draft, status: 'ativo' }
-    if (obraScoped) payload.obra_id = obraId
+    if (obraScoped) payload.obraId = obraId
 
-    const { error: insertError } = await supabase.from(table).insert(payload)
-    if (insertError) setError(insertError.message)
-    else {
+    try {
+      await addDoc(collection(db, table), payload)
       setDraft(emptyDraft(fields))
       await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao adicionar.')
     }
     setCreating(false)
   }
@@ -78,22 +93,23 @@ export function CatalogManager({
 
   async function saveEdit(id: string) {
     setError(null)
-    const { error: updateError } = await supabase.from(table).update(editDraft).eq('id', id)
-    if (updateError) setError(updateError.message)
-    else {
+    try {
+      await updateDoc(doc(db, table, id), editDraft)
       setEditingId(null)
       await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao salvar.')
     }
   }
 
   async function toggleStatus(row: Row) {
     const novoStatus = row.status === 'ativo' ? 'inativo' : 'ativo'
-    const { error: updateError } = await supabase
-      .from(table)
-      .update({ status: novoStatus })
-      .eq('id', row.id)
-    if (updateError) setError(updateError.message)
-    else await load()
+    try {
+      await updateDoc(doc(db, table, row.id), { status: novoStatus })
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao atualizar status.')
+    }
   }
 
   return (

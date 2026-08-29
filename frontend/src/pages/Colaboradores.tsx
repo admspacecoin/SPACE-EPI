@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { collection, getDocs, orderBy, query } from 'firebase/firestore'
+import { db } from '../lib/firebase'
 import { PageHeader } from '../components/PageHeader'
 import { StatusBadge } from '../components/StatusBadge'
 import { EmployeeAvatar } from '../features/employees/EmployeeAvatar'
@@ -21,15 +22,45 @@ export default function Colaboradores() {
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const { data, error: fetchError } = await supabase
-        .from('employees')
-        .select(
-          'id, nome_completo, matricula, cpf, situacao, foto_url, companies(nome), sectors(nome), job_functions(nome)'
-        )
-        .order('nome_completo')
+      try {
+        const [empSnap, companiesSnap, sectorsSnap, functionsSnap] = await Promise.all([
+          getDocs(query(collection(db, 'employees'), orderBy('nomeCompleto'))),
+          getDocs(collection(db, 'companies')),
+          getDocs(collection(db, 'sectors')),
+          getDocs(collection(db, 'jobFunctions')),
+        ])
+        const companyMap = new Map(companiesSnap.docs.map((d) => [d.id, d.data().nome as string]))
+        const sectorMap = new Map(sectorsSnap.docs.map((d) => [d.id, d.data().nome as string]))
+        const functionMap = new Map(functionsSnap.docs.map((d) => [d.id, d.data().nome as string]))
 
-      if (fetchError) setError(fetchError.message)
-      else setEmployees((data ?? []) as unknown as Employee[])
+        const parsed: Employee[] = empSnap.docs.map((d) => {
+          const e = d.data() as any
+          return {
+            id: d.id,
+            obra_id: e.obraId,
+            company_id: e.companyId ?? null,
+            sector_id: e.sectorId ?? null,
+            job_function_id: e.jobFunctionId ?? null,
+            foto_url: e.fotoPath ?? null,
+            nome_completo: e.nomeCompleto,
+            matricula: e.matricula,
+            cpf: e.cpf ?? null,
+            data_admissao: e.dataAdmissao ?? null,
+            data_desligamento: e.dataDesligamento ?? null,
+            responsavel_imediato: e.responsavelImediato ?? null,
+            contato: e.contato ?? null,
+            situacao: e.situacao,
+            created_at: e.createdAt,
+            updated_at: e.updatedAt,
+            companies: e.companyId ? { nome: companyMap.get(e.companyId) ?? '—' } : null,
+            sectors: e.sectorId ? { nome: sectorMap.get(e.sectorId) ?? '—' } : null,
+            job_functions: e.jobFunctionId ? { nome: functionMap.get(e.jobFunctionId) ?? '—' } : null,
+          }
+        })
+        setEmployees(parsed)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Falha ao carregar colaboradores.')
+      }
       setLoading(false)
     }
     load()

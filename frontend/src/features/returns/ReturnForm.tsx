@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { registrarDevolucao as registrarDevolucaoBackend } from '../../lib/backend'
 import { useCurrentObra } from '../../lib/useCurrentObra'
 import { usePpePicker } from '../inventory/usePpePicker'
 import { useEmployeeSearch } from '../deliveries/useEmployeeSearch'
@@ -48,20 +48,22 @@ export function ReturnForm({ onDone }: { onDone: () => void }) {
     }
 
     setSaving(true)
-    const { error: rpcError } = await supabase.rpc('registrar_devolucao', {
-      p_employee_id: employee.id,
-      p_variant_id: variantId,
-      p_quantidade: qtd,
-      p_motivo: motivo.trim() || null,
-      p_condicao: condicao,
-      p_retornar_ao_estoque: retornarAoEstoque,
-    })
-    setSaving(false)
-
-    if (rpcError) {
-      setError(rpcError.message.includes('permissão') ? 'Seu perfil não tem permissão para registrar devoluções.' : rpcError.message)
+    try {
+      await registrarDevolucaoBackend({
+        employeeId: employee.id,
+        variantId,
+        quantidade: qtd,
+        motivo: motivo.trim() || null,
+        condicao,
+        retornarAoEstoque,
+      })
+    } catch (err) {
+      setSaving(false)
+      const msg = err instanceof Error ? err.message : 'Falha ao registrar devolução.'
+      setError(msg.includes('permissão') ? 'Seu perfil não tem permissão para registrar devoluções.' : msg)
       return
     }
+    setSaving(false)
 
     setSuccess(true)
     onDone()

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { collection, getCountFromServer, getDocs, query, where } from 'firebase/firestore'
+import { db } from '../lib/firebase'
 import { PageHeader } from '../components/PageHeader'
 import { DeliveriesByMonthChart } from '../features/dashboard/DeliveriesByMonthChart'
 import { TopPpeChart } from '../features/dashboard/TopPpeChart'
@@ -59,29 +60,25 @@ export default function Dashboard() {
   useEffect(() => {
     async function load() {
       try {
-        const [employees, epis, alerts] = await Promise.all([
-          supabase.from('employees').select('situacao'),
-          supabase.from('ppe_items').select('id', { count: 'exact', head: true }),
-          supabase.from('alerts').select('tipo').eq('status', 'aberto'),
+        const [employeesSnap, episCount, alertsSnap] = await Promise.all([
+          getDocs(collection(db, 'employees')),
+          getCountFromServer(collection(db, 'ppeItems')),
+          getDocs(query(collection(db, 'alerts'), where('status', '==', 'aberto'))),
         ])
 
-        if (employees.error) throw employees.error
-        if (epis.error) throw epis.error
-        if (alerts.error) throw alerts.error
+        const situacoes = employeesSnap.docs.map((d) => d.data().situacao as string)
+        const bySituacao = (s: string) => situacoes.filter((sit) => sit === s).length
 
-        const bySituacao = (s: string) =>
-          (employees.data ?? []).filter((e) => e.situacao === s).length
-
-        const countAlert = (tipo: string) =>
-          (alerts.data ?? []).filter((a) => a.tipo === tipo).length
+        const tipos = alertsSnap.docs.map((d) => d.data().tipo as string)
+        const countAlert = (tipo: string) => tipos.filter((t) => t === tipo).length
 
         setCards({
-          totalColaboradores: employees.data?.length ?? 0,
+          totalColaboradores: employeesSnap.size,
           ativos: bySituacao('ativo'),
           ferias: bySituacao('ferias'),
           afastados: bySituacao('afastamento'),
           desligados: bySituacao('desligado'),
-          totalEpis: epis.count ?? 0,
+          totalEpis: episCount.data().count,
           estoqueBaixoOuCritico: countAlert('estoque_baixo') + countAlert('estoque_critico'),
           semEstoque: countAlert('sem_estoque'),
           caVencendo: countAlert('ca_vencendo'),

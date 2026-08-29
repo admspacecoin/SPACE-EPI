@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import type { InventoryMovement } from './types'
 
 export function EntriesHistory({ obraId }: { obraId: string | null | undefined }) {
@@ -12,33 +13,66 @@ export function EntriesHistory({ obraId }: { obraId: string | null | undefined }
     if (!obraId) return
     async function load() {
       setLoading(true)
-      const { data, error: fetchError } = await supabase
-        .from('inventory_movements')
-        .select(
-          `id, variant_id, tipo, quantidade, data, origem, observacao,
-           users ( nome ),
-           ppe_variants ( sku_gerado, ppe_items ( nome ) )`
+      try {
+        const movementsSnap = await getDocs(
+          query(
+            collection(db, 'inventoryMovements'),
+            where('obraId', '==', obraId),
+            where('tipo', '==', 'entrada'),
+            orderBy('data', 'desc'),
+            limit(200)
+          )
         )
-        .eq('obra_id', obraId)
-        .eq('tipo', 'entrada')
-        .order('data', { ascending: false })
-        .limit(200)
 
-      if (fetchError) setError(fetchError.message)
-      else {
-        const parsed: InventoryMovement[] = (data ?? []).map((row: any) => ({
-          id: row.id,
-          variant_id: row.variant_id,
-          tipo: row.tipo,
-          quantidade: row.quantidade,
-          data: row.data,
-          origem: row.origem,
-          observacao: row.observacao,
-          usuario_nome: row.users?.nome ?? null,
-          ppe_nome: row.ppe_variants?.ppe_items?.nome ?? '—',
-          sku_gerado: row.ppe_variants?.sku_gerado ?? null,
-        }))
+        const cache = new Map<string, { ppeNome: string; sku: string | null }>()
+        const userCache = new Map<string, string>()
+
+        const parsed: InventoryMovement[] = await Promise.all(
+          movementsSnap.docs.map(async (d) => {
+            const row = d.data() as any
+            const variantId = row.variantId as string
+
+            if (!cache.has(variantId)) {
+              const invSnap = await getDoc(doc(db, 'inventory', variantId))
+              const ppeItemId = invSnap.exists() ? (invSnap.data().ppeItemId as string) : null
+              let ppeNome = '—'
+              let sku: string | null = null
+              if (ppeItemId) {
+                const [itemSnap, variantSnap] = await Promise.all([
+                  getDoc(doc(db, 'ppeItems', ppeItemId)),
+                  getDoc(doc(db, 'ppeItems', ppeItemId, 'variants', variantId)),
+                ])
+                ppeNome = itemSnap.exists() ? itemSnap.data().nome : '—'
+                sku = variantSnap.exists() ? variantSnap.data().skuGerado ?? null : null
+              }
+              cache.set(variantId, { ppeNome, sku })
+            }
+
+            const usuarioId = row.usuarioId as string | null
+            if (usuarioId && !userCache.has(usuarioId)) {
+              const userSnap = await getDoc(doc(db, 'users', usuarioId))
+              userCache.set(usuarioId, userSnap.exists() ? userSnap.data().nome : '—')
+            }
+
+            const info = cache.get(variantId)!
+            return {
+              id: d.id,
+              variant_id: variantId,
+              tipo: row.tipo,
+              quantidade: row.quantidade,
+              data: toDateString(row.data),
+              origem: row.origem ?? null,
+              observacao: row.observacao ?? null,
+              usuario_nome: usuarioId ? userCache.get(usuarioId) ?? null : null,
+              ppe_nome: info.ppeNome,
+              sku_gerado: info.sku,
+            } as InventoryMovement
+          })
+        )
+
         setEntries(parsed)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Falha ao carregar as entradas.')
       }
       setLoading(false)
     }
@@ -110,6 +144,13 @@ export function EntriesHistory({ obraId }: { obraId: string | null | undefined }
       </div>
     </div>
   )
+}
+
+function toDateString(value: unknown): string {
+  if (value && typeof value === 'object' && 'toDate' in (value as any)) {
+    return (value as any).toDate().toISOString()
+  }
+  return String(value ?? '')
 }
 
 function formatDate(d: string) {

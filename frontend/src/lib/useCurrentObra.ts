@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from './supabase'
+import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore'
+import { db } from './firebase'
 
 export function useCurrentObra() {
   const [obraId, setObraId] = useState<string | null>(null)
@@ -12,20 +13,23 @@ export function useCurrentObra() {
       // Enquanto o sistema opera com uma única obra ativa (seção 47), usamos a
       // primeira obra com status "ativo". Quando o multi-obra for implementado,
       // isso vira um seletor no topo da tela em vez de uma busca automática.
-      const { data, error: fetchError } = await supabase
-        .from('obras')
-        .select('id, nome')
-        .eq('status', 'ativo')
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle()
-
-      if (fetchError) setError(fetchError.message)
-      else if (data) {
-        setObraId(data.id)
-        setObraNome(data.nome)
-      } else {
-        setError('Nenhuma obra ativa cadastrada. Cadastre uma obra em "obras" antes de continuar.')
+      try {
+        const q = query(
+          collection(db, 'obras'),
+          where('status', '==', 'ativo'),
+          orderBy('createdAt', 'asc'),
+          limit(1)
+        )
+        const snap = await getDocs(q)
+        if (!snap.empty) {
+          const doc = snap.docs[0]
+          setObraId(doc.id)
+          setObraNome(doc.data().nome)
+        } else {
+          setError('Nenhuma obra ativa cadastrada. Cadastre uma obra em "obras" antes de continuar.')
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Falha ao carregar a obra atual.')
       }
       setLoading(false)
     }

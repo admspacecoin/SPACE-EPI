@@ -89,7 +89,7 @@ export default function Administracao() {
 
       {tab === 'funcoes' && (
         <CatalogManager
-          table="job_functions"
+          table="jobFunctions"
           title="Funções"
           subtitle="Ex.: Pedreiro, Eletricista, Almoxarife (seção 32). Não é vinculada a uma obra específica."
           fields={[{ key: 'nome', label: 'Nome da função', required: true, placeholder: 'Pedreiro' }]}

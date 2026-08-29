@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { collection, getDocs, orderBy, query } from 'firebase/firestore'
+import { db } from '../lib/firebase'
 import { useCurrentObra } from '../lib/useCurrentObra'
 import { useObraSettings } from '../lib/useObraSettings'
 import { calcDateIndicator, DATE_INDICATOR_BADGE, DATE_INDICATOR_LABEL } from '../lib/dateIndicator'
@@ -37,15 +38,38 @@ export default function Epis() {
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const { data, error: fetchError } = await supabase
-        .from('ppe_items')
-        .select(
-          'id, nome, codigo_interno, ca_numero, ca_validade, categoria_id, estoque_minimo, unidade_medida, foto_url, status, ppe_categories(nome)'
-        )
-        .order('nome')
+      try {
+        const [itemsSnap, categoriesSnap] = await Promise.all([
+          getDocs(query(collection(db, 'ppeItems'), orderBy('nome'))),
+          getDocs(collection(db, 'ppeCategories')),
+        ])
+        const categoryMap = new Map(categoriesSnap.docs.map((d) => [d.id, d.data().nome as string]))
 
-      if (fetchError) setError(fetchError.message)
-      else setItems((data ?? []) as unknown as PpeItem[])
+        const parsed: PpeItem[] = itemsSnap.docs.map((d) => {
+          const i = d.data() as any
+          return {
+            id: d.id,
+            obra_id: i.obraId,
+            categoria_id: i.categoriaId ?? null,
+            nome: i.nome,
+            codigo_interno: i.codigoInterno ?? null,
+            descricao: i.descricao ?? null,
+            fabricante: i.fabricante ?? null,
+            modelo: i.modelo ?? null,
+            ca_numero: i.caNumero ?? null,
+            ca_validade: i.caValidade ?? null,
+            estoque_minimo: i.estoqueMinimo ?? 0,
+            unidade_medida: i.unidadeMedida ?? 'UN',
+            foto_url: i.fotoPath ?? null,
+            status: i.status ?? 'ativo',
+            observacoes: i.observacoes ?? null,
+            ppe_categories: i.categoriaId ? { nome: categoryMap.get(i.categoriaId) ?? '—' } : null,
+          }
+        })
+        setItems(parsed)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Falha ao carregar EPIs.')
+      }
       setLoading(false)
     }
     load()

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { registrarEntrega as registrarEntregaBackend } from '../../lib/backend'
 import { useCurrentObra } from '../../lib/useCurrentObra'
 import { useEmployeeFormOptions } from '../employees/useEmployeeFormOptions'
 import { EmployeeAvatar } from '../employees/EmployeeAvatar'
@@ -96,23 +96,24 @@ export function NovaEntregaWizard() {
     setConfirming(true)
     setConfirmError(null)
 
-    const { data, error } = await supabase.rpc('registrar_entrega', {
-      p_employee_id: selectedEmployee.id,
-      p_setor_responsavel_id: setorResponsavelId || null,
-      p_observacao: observacao.trim() || null,
-      p_items: cart.map((i) => ({
-        variant_id: i.variantId,
-        quantidade: i.quantidade,
-        motivo: i.motivo,
-      })),
-    })
+    try {
+      const result = await registrarEntregaBackend({
+        employeeId: selectedEmployee.id,
+        setorResponsavelId: setorResponsavelId || null,
+        observacao: observacao.trim() || null,
+        items: cart.map((i) => ({
+          variantId: i.variantId,
+          quantidade: i.quantidade,
+          motivo: i.motivo,
+        })),
+      })
 
-    setConfirming(false)
-    if (error) {
-      setConfirmError(traduzirErro(error.message))
-      return
+      setConfirming(false)
+      setConfirmedId(result.deliveryId)
+    } catch (err) {
+      setConfirming(false)
+      setConfirmError(traduzirErro(err instanceof Error ? err.message : 'Falha ao registrar a entrega.'))
     }
-    setConfirmedId(data as string)
   }
 
   function resetAll() {

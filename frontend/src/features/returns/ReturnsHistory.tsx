@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, getDoc, getDocs, limit, orderBy, query } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import { StatusBadge } from '../../components/StatusBadge'
 import { RETURN_CONDITION_LABEL, type ReturnRecord } from './types'
 
@@ -12,31 +13,49 @@ export function ReturnsHistory({ obraId, refreshKey }: { obraId: string | null |
     if (!obraId) return
     async function load() {
       setLoading(true)
-      const { data, error: fetchError } = await supabase
-        .from('ppe_returns')
-        .select(
-          `id, data, quantidade, condicao, motivo, retornou_ao_estoque,
-           employees!inner ( nome_completo, obra_id ),
-           ppe_variants ( sku_gerado, ppe_items ( nome ) )`
-        )
-        .eq('employees.obra_id', obraId)
-        .order('data', { ascending: false })
-        .limit(50)
+      try {
+        // ppeReturns não guarda obraId diretamente (segue employeeId) — como o
+        // sistema é single-obra por enquanto, trazemos as 50 mais recentes e
+        // resolvemos colaborador/EPI em paralelo.
+        const snap = await getDocs(query(collection(db, 'ppeReturns'), orderBy('data', 'desc'), limit(50)))
 
-      if (fetchError) setError(fetchError.message)
-      else {
-        const parsed: ReturnRecord[] = (data ?? []).map((row: any) => ({
-          id: row.id,
-          data: row.data,
-          quantidade: row.quantidade,
-          condicao: row.condicao,
-          motivo: row.motivo,
-          retornou_ao_estoque: row.retornou_ao_estoque,
-          employee_nome: row.employees?.nome_completo ?? '—',
-          ppe_nome: row.ppe_variants?.ppe_items?.nome ?? '—',
-          sku_gerado: row.ppe_variants?.sku_gerado ?? null,
-        }))
+        const parsed: ReturnRecord[] = await Promise.all(
+          snap.docs.map(async (d) => {
+            const row = d.data() as any
+            const [empSnap, variantInvSnap] = await Promise.all([
+              getDoc(doc(db, 'employees', row.employeeId)),
+              getDoc(doc(db, 'inventory', row.variantId)),
+            ])
+
+            let ppeNome = '—'
+            let sku: string | null = null
+            if (variantInvSnap.exists()) {
+              const ppeItemId = variantInvSnap.data().ppeItemId as string
+              const [itemSnap, variantSnap] = await Promise.all([
+                getDoc(doc(db, 'ppeItems', ppeItemId)),
+                getDoc(doc(db, 'ppeItems', ppeItemId, 'variants', row.variantId)),
+              ])
+              ppeNome = itemSnap.exists() ? itemSnap.data().nome : '—'
+              sku = variantSnap.exists() ? variantSnap.data().skuGerado ?? null : null
+            }
+
+            return {
+              id: d.id,
+              data: toDateString(row.data),
+              quantidade: row.quantidade,
+              condicao: row.condicao,
+              motivo: row.motivo,
+              retornou_ao_estoque: row.retornouAoEstoque,
+              employee_nome: empSnap.exists() ? empSnap.data().nomeCompleto : '—',
+              ppe_nome: ppeNome,
+              sku_gerado: sku,
+            } as ReturnRecord
+          })
+        )
+
         setRecords(parsed)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Falha ao carregar devoluções.')
       }
       setLoading(false)
     }
@@ -100,6 +119,13 @@ export function ReturnsHistory({ obraId, refreshKey }: { obraId: string | null |
       </div>
     </div>
   )
+}
+
+function toDateString(value: unknown): string {
+  if (value && typeof value === 'object' && 'toDate' in (value as any)) {
+    return (value as any).toDate().toISOString().slice(0, 10)
+  }
+  return String(value ?? '')
 }
 
 function formatDate(d: string) {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, getDoc, getDocs, orderBy, query } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import type { AlertRow } from './types'
 
 export function useAlerts() {
@@ -11,55 +12,73 @@ export function useAlerts() {
     setLoading(true)
     setError(null)
 
-    const { data, error: fetchError } = await supabase
-      .from('alerts')
-      .select('id, tipo, referencia_tipo, referencia_id, gravidade, status, data_geracao, data_resolucao')
-      .order('gravidade', { ascending: false })
-      .order('data_geracao', { ascending: false })
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'alerts'), orderBy('gravidade', 'desc'), orderBy('dataGeracao', 'desc'))
+      )
+      const rows = snap.docs.map((d) => {
+        const data = d.data() as any
+        return {
+          id: d.id,
+          tipo: data.tipo,
+          referencia_tipo: data.referenciaTipo,
+          referencia_id: data.referenciaId,
+          gravidade: data.gravidade,
+          status: data.status,
+          data_geracao: toDateString(data.dataGeracao),
+          data_resolucao: data.dataResolucao ? toDateString(data.dataResolucao) : null,
+        }
+      })
 
-    if (fetchError) {
-      setError(fetchError.message)
-      setLoading(false)
-      return
+      // Resolve o rótulo de cada referência polimórfica. `referenciaTipo` vem
+      // das Cloud Functions (recalcularAlertas) já em camelCase: 'ppeVariant' |
+      // 'ppeItem' | 'employee'.
+      const resolved: AlertRow[] = await Promise.all(
+        rows.map(async (r) => {
+          let label = '—'
+          try {
+            if (r.referencia_tipo === 'ppeVariant') {
+              const invSnap = await getDoc(doc(db, 'inventory', r.referencia_id))
+              const ppeItemId = invSnap.exists() ? (invSnap.data().ppeItemId as string) : null
+              if (ppeItemId) {
+                const [itemSnap, variantSnap] = await Promise.all([
+                  getDoc(doc(db, 'ppeItems', ppeItemId)),
+                  getDoc(doc(db, 'ppeItems', ppeItemId, 'variants', r.referencia_id)),
+                ])
+                const nome = itemSnap.exists() ? itemSnap.data().nome : '—'
+                const sku = variantSnap.exists() ? variantSnap.data().skuGerado : '—'
+                label = `${nome} — ${sku ?? '—'}`
+              } else {
+                label = 'Variação removida'
+              }
+            } else if (r.referencia_tipo === 'ppeItem') {
+              const itemSnap = await getDoc(doc(db, 'ppeItems', r.referencia_id))
+              if (itemSnap.exists()) {
+                const i = itemSnap.data()
+                label = `${i.nome}${i.caNumero ? ` (${i.caNumero})` : ''}`
+              } else {
+                label = 'EPI removido'
+              }
+            } else if (r.referencia_tipo === 'employee') {
+              const empSnap = await getDoc(doc(db, 'employees', r.referencia_id))
+              if (empSnap.exists()) {
+                const e = empSnap.data()
+                label = `${e.nomeCompleto} (${e.matricula})`
+              } else {
+                label = 'Colaborador removido'
+              }
+            }
+          } catch {
+            label = '—'
+          }
+          return { ...r, referenciaLabel: label } as AlertRow
+        })
+      )
+
+      setAlerts(resolved)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao carregar alertas.')
     }
-
-    const rows = data ?? []
-    const variantIds = rows.filter((r) => r.referencia_tipo === 'ppe_variant').map((r) => r.referencia_id)
-    const itemIds = rows.filter((r) => r.referencia_tipo === 'ppe_item').map((r) => r.referencia_id)
-    const employeeIds = rows.filter((r) => r.referencia_tipo === 'employee').map((r) => r.referencia_id)
-
-    const [variantsRes, itemsRes, employeesRes] = await Promise.all([
-      variantIds.length
-        ? supabase.from('ppe_variants').select('id, sku_gerado, ppe_items(nome)').in('id', variantIds)
-        : Promise.resolve({ data: [] as any[] }),
-      itemIds.length
-        ? supabase.from('ppe_items').select('id, nome, ca_numero').in('id', itemIds)
-        : Promise.resolve({ data: [] as any[] }),
-      employeeIds.length
-        ? supabase.from('employees').select('id, nome_completo, matricula').in('id', employeeIds)
-        : Promise.resolve({ data: [] as any[] }),
-    ])
-
-    const variantMap = new Map((variantsRes.data ?? []).map((v: any) => [v.id, v]))
-    const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]))
-    const employeeMap = new Map((employeesRes.data ?? []).map((e: any) => [e.id, e]))
-
-    const resolved: AlertRow[] = rows.map((r) => {
-      let label = '—'
-      if (r.referencia_tipo === 'ppe_variant') {
-        const v = variantMap.get(r.referencia_id)
-        label = v ? `${v.ppe_items?.nome ?? '—'} — ${v.sku_gerado ?? '—'}` : 'Variação removida'
-      } else if (r.referencia_tipo === 'ppe_item') {
-        const i = itemMap.get(r.referencia_id)
-        label = i ? `${i.nome}${i.ca_numero ? ` (${i.ca_numero})` : ''}` : 'EPI removido'
-      } else if (r.referencia_tipo === 'employee') {
-        const e = employeeMap.get(r.referencia_id)
-        label = e ? `${e.nome_completo} (${e.matricula})` : 'Colaborador removido'
-      }
-      return { ...r, referenciaLabel: label } as AlertRow
-    })
-
-    setAlerts(resolved)
     setLoading(false)
   }, [])
 
@@ -68,4 +87,11 @@ export function useAlerts() {
   }, [load])
 
   return { alerts, loading, error, reload: load }
+}
+
+function toDateString(value: unknown): string {
+  if (value && typeof value === 'object' && 'toDate' in (value as any)) {
+    return (value as any).toDate().toISOString()
+  }
+  return String(value ?? '')
 }

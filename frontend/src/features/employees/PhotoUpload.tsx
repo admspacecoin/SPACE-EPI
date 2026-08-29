@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { Camera, Loader2, X } from 'lucide-react'
 import clsx from 'clsx'
-import { supabase } from '../../lib/supabase'
+import { deleteObject, getDownloadURL, ref, uploadBytes } from 'firebase/storage'
+import { storage } from '../../lib/firebase'
 
 const MAX_SIZE_MB = 5
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
 type PhotoUploadProps = {
-  /** caminho do arquivo no bucket (não a URL pública — o bucket é privado) */
+  /** caminho completo do arquivo no Storage (inclui o prefixo de pasta) */
   value: string | null
   onChange: (path: string | null) => void
-  /** pasta de particionamento (ex: obra atual) usada para organizar o bucket */
+  /** pasta de particionamento (ex: obra atual) usada para organizar o Storage */
   scopeId: string | null | undefined
+  /** prefixo de pasta — equivalente ao "bucket" que existia no Supabase */
   bucket?: string
   label?: string
   shape?: 'circle' | 'square'
@@ -26,7 +28,7 @@ export function PhotoUpload({
   shape = 'circle',
 }: PhotoUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null)
-  const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -34,11 +36,15 @@ export function PhotoUpload({
     let cancelled = false
     async function loadPreview() {
       if (!value) {
-        setSignedUrl(null)
+        setPreviewUrl(null)
         return
       }
-      const { data } = await supabase.storage.from(bucket).createSignedUrl(value, 3600)
-      if (!cancelled) setSignedUrl(data?.signedUrl ?? null)
+      try {
+        const url = await getDownloadURL(ref(storage, value))
+        if (!cancelled) setPreviewUrl(url)
+      } catch {
+        if (!cancelled) setPreviewUrl(null)
+      }
     }
     loadPreview()
     return () => {
@@ -59,22 +65,23 @@ export function PhotoUpload({
 
     setUploading(true)
     const ext = file.name.split('.').pop()
-    const path = `${scopeId ?? 'geral'}/${crypto.randomUUID()}.${ext}`
+    const path = `${bucket}/${scopeId ?? 'geral'}/${crypto.randomUUID()}.${ext}`
 
-    const { error: uploadError } = await supabase.storage.from(bucket).upload(path, file, {
-      cacheControl: '3600',
-      upsert: false,
-    })
-
-    if (uploadError) {
-      setError(`Falha no upload: ${uploadError.message}`)
+    try {
+      await uploadBytes(ref(storage, path), file, { contentType: file.type })
+    } catch (err) {
+      setError(`Falha no upload: ${err instanceof Error ? err.message : 'erro desconhecido'}`)
       setUploading(false)
       return
     }
 
-    // remove a foto antiga do bucket, se houver (evita lixo acumulando)
+    // remove a foto antiga do Storage, se houver (evita lixo acumulando)
     if (value) {
-      await supabase.storage.from(bucket).remove([value])
+      try {
+        await deleteObject(ref(storage, value))
+      } catch {
+        // se já não existir, tudo bem — não bloqueia o fluxo
+      }
     }
 
     onChange(path)
@@ -91,8 +98,8 @@ export function PhotoUpload({
             shape === 'circle' ? 'rounded-full' : 'rounded-lg'
           )}
         >
-          {signedUrl ? (
-            <img src={signedUrl} alt="Foto do colaborador" className="h-full w-full object-cover" />
+          {previewUrl ? (
+            <img src={previewUrl} alt="Foto do colaborador" className="h-full w-full object-cover" />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-steel-400">
               <Camera size={22} />

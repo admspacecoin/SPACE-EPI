@@ -1,39 +1,69 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, getDocs, query, where } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import type { EmployeeSearchResult } from './types'
 
-export function useEmployeeSearch(obraId: string | null | undefined, query: string) {
+/**
+ * O Firestore não tem `ILIKE`/busca parcial nativa. Para o volume de
+ * colaboradores de uma obra (dezenas, não milhares), trazemos todos os ativos
+ * uma vez e filtramos em memória — mais simples e barato do que manter um
+ * serviço de busca externo (Algolia/Typesense) só para isso. Se a base
+ * crescer muito, essa é a primeira peça a trocar.
+ */
+export function useEmployeeSearch(obraId: string | null | undefined, searchTerm: string) {
+  const [allEmployees, setAllEmployees] = useState<EmployeeSearchResult[]>([])
   const [results, setResults] = useState<EmployeeSearchResult[]>([])
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!obraId || query.trim().length < 2) {
-      setResults([])
-      return
-    }
+    if (!obraId) return
     let cancelled = false
     setLoading(true)
 
-    const timeout = setTimeout(async () => {
-      const { data } = await supabase
-        .from('employees')
-        .select('id, nome_completo, matricula, situacao, foto_url, job_functions(nome), sectors(nome)')
-        .eq('obra_id', obraId)
-        .or(`nome_completo.ilike.%${query}%,matricula.ilike.%${query}%`)
-        .order('nome_completo')
-        .limit(8)
+    async function loadAll() {
+      const [empSnap, sectorsSnap, functionsSnap] = await Promise.all([
+        getDocs(query(collection(db, 'employees'), where('obraId', '==', obraId))),
+        getDocs(collection(db, 'sectors')),
+        getDocs(collection(db, 'jobFunctions')),
+      ])
+      const sectorMap = new Map(sectorsSnap.docs.map((d) => [d.id, d.data().nome as string]))
+      const functionMap = new Map(functionsSnap.docs.map((d) => [d.id, d.data().nome as string]))
 
+      const parsed: EmployeeSearchResult[] = empSnap.docs.map((d) => {
+        const e = d.data()
+        return {
+          id: d.id,
+          nome_completo: e.nomeCompleto,
+          matricula: e.matricula,
+          situacao: e.situacao,
+          foto_url: e.fotoPath ?? null,
+          job_functions: e.jobFunctionId ? { nome: functionMap.get(e.jobFunctionId) ?? '—' } : null,
+          sectors: e.sectorId ? { nome: sectorMap.get(e.sectorId) ?? '—' } : null,
+        }
+      })
       if (!cancelled) {
-        setResults((data ?? []) as unknown as EmployeeSearchResult[])
+        setAllEmployees(parsed)
         setLoading(false)
       }
-    }, 250)
-
+    }
+    loadAll()
     return () => {
       cancelled = true
-      clearTimeout(timeout)
     }
-  }, [obraId, query])
+  }, [obraId])
+
+  useEffect(() => {
+    if (searchTerm.trim().length < 2) {
+      setResults([])
+      return
+    }
+    const term = searchTerm.trim().toLowerCase()
+    setResults(
+      allEmployees
+        .filter((e) => e.nome_completo.toLowerCase().includes(term) || e.matricula.toLowerCase().includes(term))
+        .slice(0, 8)
+    )
+  }, [searchTerm, allEmployees])
 
   return { results, loading }
 }

@@ -3,14 +3,14 @@ import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../features/auth/AuthContext'
 
 export default function Login() {
-  const { session, signIn } = useAuth()
+  const { user, signIn } = useAuth()
   const location = useLocation()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
-  if (session) {
+  if (user) {
     const from = (location.state as { from?: Location })?.from?.pathname ?? '/'
     return <Navigate to={from} replace />
   }

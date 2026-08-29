@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
-import { supabase } from '../../../lib/supabase'
+import { arrayRemove, arrayUnion, collection, doc, addDoc, updateDoc } from 'firebase/firestore'
+import { db } from '../../../lib/firebase'
 import { StatusBadge } from '../../../components/StatusBadge'
 import { useAuth } from '../../auth/AuthContext'
 import { usePpeVariants } from './usePpeVariants'
@@ -23,48 +24,41 @@ export function VariantsTab({ ppeItemId }: { ppeItemId: string }) {
     if (!attributeToAdd) return
     setBusy(true)
     setLocalError(null)
-    const { error: insertError } = await supabase
-      .from('ppe_item_attributes')
-      .insert({ ppe_item_id: ppeItemId, attribute_id: attributeToAdd })
+    try {
+      await updateDoc(doc(db, 'ppeItems', ppeItemId), { attributeIds: arrayUnion(attributeToAdd) })
+      setAttributeToAdd('')
+      reload()
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Falha ao adicionar atributo.')
+    }
     setBusy(false)
-    if (insertError) return setLocalError(insertError.message)
-    setAttributeToAdd('')
-    reload()
   }
 
   async function createAndAddAttribute() {
     if (!newAttributeName.trim()) return
     setBusy(true)
     setLocalError(null)
-    const { data, error: createError } = await supabase
-      .from('ppe_attributes')
-      .insert({ nome: newAttributeName.trim() })
-      .select('id')
-      .single()
-    if (createError) {
-      setBusy(false)
-      return setLocalError(createError.message)
+    try {
+      const attrRef = await addDoc(collection(db, 'ppeAttributes'), { nome: newAttributeName.trim() })
+      await updateDoc(doc(db, 'ppeItems', ppeItemId), { attributeIds: arrayUnion(attrRef.id) })
+      setNewAttributeName('')
+      reload()
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Falha ao criar atributo.')
     }
-    const { error: linkError } = await supabase
-      .from('ppe_item_attributes')
-      .insert({ ppe_item_id: ppeItemId, attribute_id: data.id })
     setBusy(false)
-    if (linkError) return setLocalError(linkError.message)
-    setNewAttributeName('')
-    reload()
   }
 
   async function removeAttribute(attributeId: string) {
     setBusy(true)
     setLocalError(null)
-    const { error: deleteError } = await supabase
-      .from('ppe_item_attributes')
-      .delete()
-      .eq('ppe_item_id', ppeItemId)
-      .eq('attribute_id', attributeId)
+    try {
+      await updateDoc(doc(db, 'ppeItems', ppeItemId), { attributeIds: arrayRemove(attributeId) })
+      reload()
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Falha ao remover atributo.')
+    }
     setBusy(false)
-    if (deleteError) return setLocalError(deleteError.message)
-    reload()
   }
 
   // --- Valores por atributo ---
@@ -75,13 +69,14 @@ export function VariantsTab({ ppeItemId }: { ppeItemId: string }) {
     if (!valor) return
     setBusy(true)
     setLocalError(null)
-    const { error: insertError } = await supabase
-      .from('ppe_attribute_values')
-      .insert({ attribute_id: attributeId, valor })
+    try {
+      await addDoc(collection(db, 'ppeAttributes', attributeId, 'values'), { valor })
+      setNewValueDraft((d) => ({ ...d, [attributeId]: '' }))
+      reload()
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Falha ao adicionar valor.')
+    }
     setBusy(false)
-    if (insertError) return setLocalError(insertError.message)
-    setNewValueDraft((d) => ({ ...d, [attributeId]: '' }))
-    reload()
   }
 
   // --- Nova variação (combinação de valores) ---
@@ -109,44 +104,43 @@ export function VariantsTab({ ppeItemId }: { ppeItemId: string }) {
     setBusy(true)
     setLocalError(null)
 
-    const skuParts = usedAttributes.map((a) => {
+    const attributeValues = usedAttributes.map((a) => {
       const valueId = variantSelection[a.id]
       const value = valuesByAttribute[a.id]?.find((v) => v.id === valueId)
-      return value?.valor ?? ''
+      return {
+        attributeId: a.id,
+        attributeNome: a.nome,
+        attributeValueId: valueId,
+        valor: value?.valor ?? '',
+      }
     })
-    const sku = skuParts.join('-').toUpperCase()
+    const sku = attributeValues.map((v) => v.valor).join('-').toUpperCase()
 
-    const { data: variantRow, error: variantError } = await supabase
-      .from('ppe_variants')
-      .insert({ ppe_item_id: ppeItemId, sku_gerado: sku })
-      .select('id')
-      .single()
-
-    if (variantError) {
-      setBusy(false)
-      return setLocalError(variantError.message)
+    try {
+      await addDoc(collection(db, 'ppeItems', ppeItemId, 'variants'), {
+        skuGerado: sku,
+        status: 'ativo',
+        attributeValues,
+      })
+      setVariantSelection({})
+      reload()
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Falha ao criar variação.')
     }
-
-    const { error: valuesError } = await supabase
-      .from('ppe_variant_values')
-      .insert(selectedIds.map((attribute_value_id) => ({ variant_id: variantRow.id, attribute_value_id })))
-
     setBusy(false)
-    if (valuesError) return setLocalError(valuesError.message)
-
-    setVariantSelection({})
-    reload()
   }
 
   async function toggleVariantStatus(variantId: string, current: 'ativo' | 'inativo') {
     setBusy(true)
-    const { error: updateError } = await supabase
-      .from('ppe_variants')
-      .update({ status: current === 'ativo' ? 'inativo' : 'ativo' })
-      .eq('id', variantId)
+    try {
+      await updateDoc(doc(db, 'ppeItems', ppeItemId, 'variants', variantId), {
+        status: current === 'ativo' ? 'inativo' : 'ativo',
+      })
+      reload()
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Falha ao atualizar status.')
+    }
     setBusy(false)
-    if (updateError) return setLocalError(updateError.message)
-    reload()
   }
 
   if (loading) return <p className="text-sm text-steel-500">Carregando…</p>

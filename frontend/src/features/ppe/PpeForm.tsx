@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, serverTimestamp, writeBatch } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
+import { useAuth } from '../auth/AuthContext'
 import { useCurrentObra } from '../../lib/useCurrentObra'
 import { PhotoUpload } from '../employees/PhotoUpload'
 import { usePpeCategories } from './usePpeCategories'
@@ -45,6 +47,7 @@ function toFormState(item?: PpeItem): FormState {
 
 export function PpeForm({ item, onSaved }: PpeFormProps) {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const { obraId } = useCurrentObra()
   const { categories, createCategory } = usePpeCategories()
 
@@ -89,39 +92,51 @@ export function PpeForm({ item, onSaved }: PpeFormProps) {
 
     setSaving(true)
 
+    // Documentos no Firestore usam camelCase (ver DATA_MODEL.md); os tipos
+    // internos do app continuam em snake_case para minimizar mudanças no
+    // resto do código já escrito para o Supabase.
     const payload = {
-      obra_id: obraId,
+      obraId: obraId,
       nome: form.nome.trim(),
-      codigo_interno: form.codigo_interno.trim() || null,
-      categoria_id: form.categoria_id || null,
+      codigoInterno: form.codigo_interno.trim() || null,
+      categoriaId: form.categoria_id || null,
       descricao: form.descricao.trim() || null,
       fabricante: form.fabricante.trim() || null,
       modelo: form.modelo.trim() || null,
-      ca_numero: form.ca_numero.trim() || null,
-      ca_validade: form.ca_validade || null,
-      estoque_minimo: estoqueMinimo,
-      unidade_medida: form.unidade_medida.trim() || 'UN',
-      foto_url: form.foto_url,
+      caNumero: form.ca_numero.trim() || null,
+      caValidade: form.ca_validade || null,
+      estoqueMinimo: estoqueMinimo,
+      unidadeMedida: form.unidade_medida.trim() || 'UN',
+      fotoPath: form.foto_url,
       observacoes: form.observacoes.trim() || null,
+      status: item?.status ?? 'ativo',
     }
 
-    if (item) {
-      const { error: updateError } = await supabase.from('ppe_items').update(payload).eq('id', item.id)
-      setSaving(false)
-      if (updateError) return setError(updateError.message)
-      onSaved?.(item.id)
-    } else {
-      const { data, error: insertError } = await supabase
-        .from('ppe_items')
-        .insert(payload)
-        .select('id')
-        .single()
-      setSaving(false)
-      if (insertError) return setError(insertError.message)
-      if (data) {
-        onSaved?.(data.id)
-        navigate(`/epis/${data.id}`)
+    try {
+      const batch = writeBatch(db)
+      const ref = item ? doc(db, 'ppeItems', item.id) : doc(collection(db, 'ppeItems'))
+      if (item) {
+        batch.update(ref, payload)
+      } else {
+        batch.set(ref, payload)
       }
+      batch.set(doc(collection(db, 'auditLogs')), {
+        usuarioId: user?.uid ?? null,
+        acao: item ? 'UPDATE' : 'INSERT',
+        modulo: 'ppeItems',
+        registroId: ref.id,
+        dadosAnteriores: item ?? null,
+        dadosNovos: payload,
+        data: serverTimestamp(),
+      })
+      await batch.commit()
+
+      setSaving(false)
+      onSaved?.(ref.id)
+      if (!item) navigate(`/epis/${ref.id}`)
+    } catch (err) {
+      setSaving(false)
+      setError(err instanceof Error ? err.message : 'Falha ao salvar o EPI.')
     }
   }
 

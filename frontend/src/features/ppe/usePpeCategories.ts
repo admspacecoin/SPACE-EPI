@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { addDoc, collection, getDocs, orderBy, query } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 import type { PpeCategory } from './types'
 
 export function usePpeCategories() {
@@ -8,8 +9,8 @@ export function usePpeCategories() {
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase.from('ppe_categories').select('id, nome').order('nome')
-    setCategories((data ?? []) as PpeCategory[])
+    const snap = await getDocs(query(collection(db, 'ppeCategories'), orderBy('nome')))
+    setCategories(snap.docs.map((d) => ({ id: d.id, nome: d.data().nome as string })))
     setLoading(false)
   }
 
@@ -18,14 +19,9 @@ export function usePpeCategories() {
   }, [])
 
   async function createCategory(nome: string) {
-    const { data, error } = await supabase
-      .from('ppe_categories')
-      .insert({ nome })
-      .select('id, nome')
-      .single()
-    if (error) throw error
+    const ref = await addDoc(collection(db, 'ppeCategories'), { nome })
     await load()
-    return data as PpeCategory
+    return { id: ref.id, nome } as PpeCategory
   }
 
   return { categories, loading, createCategory }

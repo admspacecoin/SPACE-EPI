@@ -1,0 +1,24 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function perfil() { return request.auth.token.perfil; }
+    function ativo() { return request.auth != null && request.auth.token.status == 'ativo'; }
+    function podeGerenciarCadastros() { return ativo() && (perfil() == 'admin' || perfil() == 'seguranca'); }
+
+    match /employee-photos/{obraId}/{fileName} {
+      allow read: if ativo();
+      allow write: if podeGerenciarCadastros()
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    match /ppe-photos/{obraId}/{fileName} {
+      allow read: if ativo();
+      allow write: if podeGerenciarCadastros()
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+  }
+}

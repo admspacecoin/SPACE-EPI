@@ -1,0 +1,170 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------
+    // Helpers — equivalentes a auth_user_role()/auth_user_active() do
+    // Postgres. Sem Cloud Functions (plano Spark) não há Custom Claims
+    // sincronizado por trigger: lemos direto de /users/{uid}, que já era a
+    // fonte da verdade mesmo quando o claim existia. Custo: uma leitura
+    // extra por avaliação de regra (cacheada dentro da mesma request).
+    // ---------------------------------------------------------
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function perfil() {
+      return userDoc().perfil;
+    }
+    function ativo() {
+      return request.auth != null && userDoc().status == 'ativo';
+    }
+    function isAdmin() { return ativo() && perfil() == 'admin'; }
+    function isSeguranca() { return ativo() && perfil() == 'seguranca'; }
+    function isAlmoxarifado() { return ativo() && perfil() == 'almoxarifado'; }
+    function podeGerenciarCadastros() { return isAdmin() || isSeguranca(); }
+    function podeGerenciarEstoque() { return isAdmin() || isAlmoxarifado(); }
+    function podeGerenciarAlertas() { return isAdmin() || isSeguranca() || isAlmoxarifado(); }
+
+    // ---------------------------------------------------------
+    // Leitura geral — qualquer usuário ativo (mesma regra "leitura_geral"
+    // usada em quase toda tabela no Postgres)
+    // ---------------------------------------------------------
+    match /obras/{id} { allow read: if ativo(); allow write: if false; }
+    match /settings/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+
+    match /companies/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+    match /sectors/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+    match /jobFunctions/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+
+    match /ppeCategories/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+    match /ppeAttributes/{id} {
+      allow read: if ativo();
+      allow write: if podeGerenciarCadastros();
+      match /values/{valueId} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+    }
+
+    // Trava de unicidade de matrícula por obra (o Firestore não tem UNIQUE
+    // constraint): ID determinístico "obraId__matricula", nunca editado ou
+    // apagado. Ver criarColaborador em frontend/src/lib/backend.ts.
+    match /employeeMatriculaLocks/{id} {
+      allow read: if podeGerenciarCadastros();
+      allow create: if podeGerenciarCadastros();
+      allow update, delete: if false;
+    }
+
+    match /employees/{id} {
+      allow read: if ativo();
+      allow create, update: if podeGerenciarCadastros();
+      allow delete: if false; // nunca exclusão física (seção 50)
+
+      // Bug real encontrado nos testes da Etapa 17: no Postgres, RLS habilitada
+      // sem policy de SELECT deixava employee_status_history sempre vazia para
+      // usuários comuns. Aqui a leitura já nasce correta desde o início.
+      match /statusHistory/{histId} {
+        allow read: if ativo();
+        // Sem Cloud Function: o próprio cliente grava o histórico, na mesma
+        // escrita que muda `situacao` (ver EmployeeForm). Nunca editado/apagado.
+        allow create: if podeGerenciarCadastros();
+        allow update, delete: if false;
+      }
+      match /exams/{examId} {
+        allow read: if ativo();
+        allow create, update: if podeGerenciarCadastros();
+        allow delete: if false;
+      }
+    }
+
+    match /ppeItems/{id} {
+      allow read: if ativo();
+      allow create, update: if podeGerenciarCadastros();
+      allow delete: if false;
+
+      match /variants/{variantId} {
+        allow read: if ativo();
+        allow create, update: if podeGerenciarCadastros();
+        allow delete: if false;
+      }
+    }
+
+    // Estoque: sem Cloud Function, o cliente escreve direto dentro de uma
+    // transação (runTransaction do SDK web) — a garantia "nunca negativo"
+    // (o bug real da Etapa 17 no Postgres) continua travada aqui na regra,
+    // não só no código do cliente.
+    match /inventory/{variantId} {
+      allow read: if ativo();
+      allow create, update: if podeGerenciarEstoque()
+                             && request.resource.data.quantidadeAtual is number
+                             && request.resource.data.quantidadeAtual >= 0;
+      allow delete: if false;
+    }
+    match /inventoryMovements/{id} {
+      allow read: if ativo();
+      allow create: if podeGerenciarEstoque();
+      allow update, delete: if false; // imutável, mesma garantia de antes
+    }
+
+    match /ppeDeliveries/{id} {
+      allow read: if ativo();
+      // Reforço de defesa em profundidade: colaborador desligado nunca
+      // recebe entrega, mesmo que o cliente tente (o registrarEntrega
+      // client-side já bloqueia isso, isto aqui é o backstop).
+      allow create: if podeGerenciarEstoque()
+                     && get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.situacao != 'desligado';
+      allow update, delete: if false;
+      match /items/{itemId} { allow read: if ativo(); allow create: if podeGerenciarEstoque(); allow update, delete: if false; }
+    }
+
+    match /ppeReturns/{id} {
+      allow read: if ativo();
+      // Item inutilizado nunca retorna ao estoque — mesma garantia da Etapa
+      // 10 do Postgres, agora travada na regra e não só escondida no cliente.
+      allow create: if podeGerenciarEstoque()
+                     && !(request.resource.data.condicao == 'inutilizado'
+                          && request.resource.data.retornouAoEstoque == true);
+      allow update, delete: if false;
+    }
+
+    match /alerts/{id} {
+      allow read: if ativo();
+      // Sem Cloud Scheduler (exige Blaze): recálculo roda sob demanda no
+      // cliente quando alguém com permissão abre a tela de Alertas.
+      allow create, delete: if podeGerenciarAlertas();
+      allow update: if podeGerenciarAlertas()
+                     && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['status', 'dataResolucao']);
+    }
+
+    // Auditoria: igual à correção da Etapa 16 — leitura restrita ao admin.
+    // Sem trigger de servidor, quem grava é o próprio cliente, na mesma
+    // operação que altera o dado principal — deixa de ser uma garantia de
+    // servidor e passa a depender do código do cliente estar correto.
+    match /auditLogs/{id} {
+      allow read: if isAdmin();
+      allow create: if ativo() && request.resource.data.usuarioId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Usuários: cada um vê a si mesmo; qualquer ativo vê nome de colegas
+    // (correção da Etapa 8); só admin edita perfil/status de terceiros.
+    match /users/{uid} {
+      allow read: if ativo();
+      allow update: if isAdmin()
+                     || (request.auth.uid == uid
+                         && request.resource.data.diff(resource.data).affectedKeys()
+                            .hasOnly(['nome']));
+      // Sem onAuthUserCreate: o próprio cliente cria seu perfil no primeiro
+      // login (ver AuthContext), sempre com os valores padrão travados aqui
+      // — ninguém se autopromove no próprio cadastro.
+      allow create: if request.auth != null && request.auth.uid == uid
+                     && request.resource.data.perfil == 'consulta'
+                     && request.resource.data.status == 'ativo';
+      allow delete: if false;
+    }
+
+    match /rolePermissions/{id} {
+      allow read: if ativo();
+      allow write: if isAdmin();
+    }
+  }
+}

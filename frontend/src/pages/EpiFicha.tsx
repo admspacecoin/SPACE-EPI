@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import clsx from 'clsx'
-import { supabase } from '../lib/supabase'
+import { doc, getDoc } from 'firebase/firestore'
+import { db } from '../lib/firebase'
 import { useCurrentObra } from '../lib/useCurrentObra'
 import { useObraSettings } from '../lib/useObraSettings'
 import { useSignedPhotoUrl } from '../lib/useSignedPhotoUrl'
@@ -33,16 +34,37 @@ export default function EpiFicha() {
   async function load() {
     if (!id) return
     setLoading(true)
-    const { data, error: fetchError } = await supabase
-      .from('ppe_items')
-      .select(
-        'id, obra_id, categoria_id, nome, codigo_interno, descricao, fabricante, modelo, ca_numero, ca_validade, estoque_minimo, unidade_medida, foto_url, status, observacoes, ppe_categories(nome)'
-      )
-      .eq('id', id)
-      .single()
+    try {
+      const snap = await getDoc(doc(db, 'ppeItems', id))
+      if (!snap.exists()) {
+        setError('EPI não encontrado.')
+        setLoading(false)
+        return
+      }
+      const i = snap.data() as any
+      const categorySnap = i.categoriaId ? await getDoc(doc(db, 'ppeCategories', i.categoriaId)) : null
 
-    if (fetchError) setError(fetchError.message)
-    else setItem(data as unknown as PpeItem)
+      setItem({
+        id: snap.id,
+        obra_id: i.obraId,
+        categoria_id: i.categoriaId ?? null,
+        nome: i.nome,
+        codigo_interno: i.codigoInterno ?? null,
+        descricao: i.descricao ?? null,
+        fabricante: i.fabricante ?? null,
+        modelo: i.modelo ?? null,
+        ca_numero: i.caNumero ?? null,
+        ca_validade: i.caValidade ?? null,
+        estoque_minimo: i.estoqueMinimo ?? 0,
+        unidade_medida: i.unidadeMedida ?? 'UN',
+        foto_url: i.fotoPath ?? null,
+        status: i.status ?? 'ativo',
+        observacoes: i.observacoes ?? null,
+        ppe_categories: categorySnap?.exists() ? { nome: categorySnap.data().nome } : null,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao carregar EPI.')
+    }
     setLoading(false)
   }
 

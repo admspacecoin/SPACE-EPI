@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, getDocs, orderBy, query, where, type QuerySnapshot, type DocumentData } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 
 export type Option = { id: string; nome: string }
+
+function toOptions(snap: QuerySnapshot<DocumentData>): Option[] {
+  return snap.docs.map((d) => ({ id: d.id, nome: d.data().nome as string }))
+}
 
 export function useEmployeeFormOptions(obraId: string | null | undefined) {
   const [companies, setCompanies] = useState<Option[]>([])
@@ -15,15 +20,19 @@ export function useEmployeeFormOptions(obraId: string | null | undefined) {
 
     async function load() {
       setLoading(true)
-      const [companiesRes, sectorsRes, functionsRes] = await Promise.all([
-        supabase.from('companies').select('id, nome').eq('obra_id', obraId).eq('status', 'ativo').order('nome'),
-        supabase.from('sectors').select('id, nome').eq('obra_id', obraId).eq('status', 'ativo').order('nome'),
-        supabase.from('job_functions').select('id, nome').eq('status', 'ativo').order('nome'),
+      const [companiesSnap, sectorsSnap, functionsSnap] = await Promise.all([
+        getDocs(
+          query(collection(db, 'companies'), where('obraId', '==', obraId), where('status', '==', 'ativo'), orderBy('nome'))
+        ),
+        getDocs(
+          query(collection(db, 'sectors'), where('obraId', '==', obraId), where('status', '==', 'ativo'), orderBy('nome'))
+        ),
+        getDocs(query(collection(db, 'jobFunctions'), where('status', '==', 'ativo'), orderBy('nome'))),
       ])
       if (!cancelled) {
-        setCompanies((companiesRes.data ?? []) as Option[])
-        setSectors((sectorsRes.data ?? []) as Option[])
-        setJobFunctions((functionsRes.data ?? []) as Option[])
+        setCompanies(toOptions(companiesSnap))
+        setSectors(toOptions(sectorsSnap))
+        setJobFunctions(toOptions(functionsSnap))
         setLoading(false)
       }
     }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from './supabase'
+import { doc, getDoc } from 'firebase/firestore'
+import { db } from './firebase'
 
 export type ObraSettings = {
   dias_alerta_ca: number
@@ -17,14 +18,15 @@ export function useObraSettings(obraId: string | null | undefined) {
     let cancelled = false
 
     async function load() {
-      const { data } = await supabase
-        .from('settings')
-        .select('dias_alerta_ca, dias_alerta_exame')
-        .eq('obra_id', obraId)
-        .maybeSingle()
-
+      // settings/{obraId} — a própria chave do documento é o id da obra.
+      const snap = await getDoc(doc(db, 'settings', obraId as string))
       if (!cancelled) {
-        setSettings(data ?? DEFAULTS)
+        const data = snap.exists() ? snap.data() : null
+        setSettings(
+          data
+            ? { dias_alerta_ca: data.diasAlertaCa ?? 30, dias_alerta_exame: data.diasAlertaExame ?? 30 }
+            : DEFAULTS
+        )
         setLoading(false)
       }
     }

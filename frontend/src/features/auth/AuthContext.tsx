@@ -1,6 +1,12 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { Session } from '@supabase/supabase-js'
-import { supabase } from '../../lib/supabase'
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  type User,
+} from 'firebase/auth'
+import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
+import { auth, db } from '../../lib/firebase'
 
 export type UserRole = 'admin' | 'almoxarifado' | 'seguranca' | 'gestor' | 'consulta'
 
@@ -13,7 +19,7 @@ export type Profile = {
 }
 
 type AuthState = {
-  session: Session | null
+  user: User | null
   profile: Profile | null
   loading: boolean
   error: string | null
@@ -24,66 +30,92 @@ type AuthState = {
 const AuthContext = createContext<AuthState | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null)
+  const [user, setUser] = useState<User | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  async function loadProfile(userId: string) {
-    const { data, error: profileError } = await supabase
-      .from('users')
-      .select('id, nome, email, perfil, status')
-      .eq('id', userId)
-      .single()
-
-    if (profileError) {
-      setError(
-        'Não foi possível carregar o perfil do usuário. Verifique se ele existe na tabela "users".'
-      )
-      setProfile(null)
-      return
-    }
-    setProfile(data as Profile)
-  }
+  useEffect(() => {
+    // onAuthStateChanged substitui supabase.auth.onAuthStateChange — dispara
+    // imediatamente com o estado atual e depois a cada login/logout.
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser)
+      if (!firebaseUser) {
+        setProfile(null)
+        setLoading(false)
+      }
+    })
+    return unsubscribeAuth
+  }, [])
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
-      if (data.session) loadProfile(data.session.user.id).finally(() => setLoading(false))
-      else setLoading(false)
-    })
+    if (!user) return
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession)
-      if (newSession) loadProfile(newSession.user.id)
-      else setProfile(null)
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [])
+    // onSnapshot em vez de um fetch único: se um admin mudar o perfil desta
+    // pessoa em Administração, a UI reage na hora, sem precisar recarregar.
+    const unsubscribeProfile = onSnapshot(
+      doc(db, 'users', user.uid),
+      async (snap) => {
+        if (!snap.exists()) {
+          // Sem Cloud Function (onAuthUserCreate): no primeiro login de uma
+          // conta criada pelo admin no Firebase Auth, o próprio cliente cria
+          // seu documento de perfil, sempre com os valores padrão travados
+          // pela regra de segurança (perfil: 'consulta', status: 'ativo').
+          // Um admin promove depois pela tela de Administração.
+          try {
+            await setDoc(doc(db, 'users', user.uid), {
+              nome: user.displayName || (user.email ? user.email.split('@')[0] : 'Usuário'),
+              email: user.email ?? '',
+              perfil: 'consulta',
+              status: 'ativo',
+              createdAt: serverTimestamp(),
+            })
+          } catch {
+            setError('Não foi possível criar o perfil do usuário.')
+            setProfile(null)
+            setLoading(false)
+          }
+          return
+        }
+        const data = snap.data()
+        setProfile({
+          id: snap.id,
+          nome: data.nome,
+          email: data.email,
+          perfil: data.perfil,
+          status: data.status,
+        })
+        setError(null)
+        setLoading(false)
+      },
+      () => {
+        setError('Falha ao sincronizar o perfil do usuário.')
+        setLoading(false)
+      }
+    )
+    return unsubscribeProfile
+  }, [user])
 
   async function signIn(email: string, password: string) {
     setError(null)
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
-    if (signInError) {
-      const msg =
-        signInError.message === 'Invalid login credentials'
-          ? 'E-mail ou senha inválidos.'
-          : signInError.message
+    try {
+      await signInWithEmailAndPassword(auth, email, password)
+      return { error: null }
+    } catch (err) {
+      const msg = translateAuthError(err)
       setError(msg)
       return { error: msg }
     }
-    return { error: null }
   }
 
   async function signOut() {
-    await supabase.auth.signOut()
-    setSession(null)
+    await firebaseSignOut(auth)
+    setUser(null)
     setProfile(null)
   }
 
   return (
-    <AuthContext.Provider value={{ session, profile, loading, error, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, profile, loading, error, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )
@@ -93,4 +125,15 @@ export function useAuth() {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth precisa estar dentro de <AuthProvider>')
   return ctx
+}
+
+function translateAuthError(err: unknown): string {
+  const code = (err as { code?: string })?.code ?? ''
+  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+    return 'E-mail ou senha inválidos.'
+  }
+  if (code === 'auth/too-many-requests') {
+    return 'Muitas tentativas. Aguarde um pouco antes de tentar de novo.'
+  }
+  return err instanceof Error ? err.message : 'Falha ao entrar.'
 }

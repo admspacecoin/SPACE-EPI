@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import clsx from 'clsx'
-import { supabase } from '../lib/supabase'
+import { doc, getDoc } from 'firebase/firestore'
+import { db } from '../lib/firebase'
 import { useSignedPhotoUrl } from '../lib/useSignedPhotoUrl'
 import { PageHeader } from '../components/PageHeader'
 import { StatusBadge } from '../components/StatusBadge'
@@ -31,16 +32,45 @@ export default function ColaboradorFicha() {
   async function load() {
     if (!id) return
     setLoading(true)
-    const { data, error: fetchError } = await supabase
-      .from('employees')
-      .select(
-        'id, obra_id, company_id, sector_id, job_function_id, foto_url, nome_completo, matricula, cpf, data_admissao, data_desligamento, responsavel_imediato, contato, situacao, created_at, updated_at, companies(nome), sectors(nome), job_functions(nome)'
-      )
-      .eq('id', id)
-      .single()
+    try {
+      const snap = await getDoc(doc(db, 'employees', id))
+      if (!snap.exists()) {
+        setError('Colaborador não encontrado.')
+        setLoading(false)
+        return
+      }
+      const e = snap.data() as any
 
-    if (fetchError) setError(fetchError.message)
-    else setEmployee(data as unknown as Employee)
+      const [companySnap, sectorSnap, functionSnap] = await Promise.all([
+        e.companyId ? getDoc(doc(db, 'companies', e.companyId)) : Promise.resolve(null),
+        e.sectorId ? getDoc(doc(db, 'sectors', e.sectorId)) : Promise.resolve(null),
+        e.jobFunctionId ? getDoc(doc(db, 'jobFunctions', e.jobFunctionId)) : Promise.resolve(null),
+      ])
+
+      setEmployee({
+        id: snap.id,
+        obra_id: e.obraId,
+        company_id: e.companyId ?? null,
+        sector_id: e.sectorId ?? null,
+        job_function_id: e.jobFunctionId ?? null,
+        foto_url: e.fotoPath ?? null,
+        nome_completo: e.nomeCompleto,
+        matricula: e.matricula,
+        cpf: e.cpf ?? null,
+        data_admissao: e.dataAdmissao ?? null,
+        data_desligamento: e.dataDesligamento ?? null,
+        responsavel_imediato: e.responsavelImediato ?? null,
+        contato: e.contato ?? null,
+        situacao: e.situacao,
+        created_at: e.createdAt,
+        updated_at: e.updatedAt,
+        companies: companySnap?.exists() ? { nome: companySnap.data().nome } : null,
+        sectors: sectorSnap?.exists() ? { nome: sectorSnap.data().nome } : null,
+        job_functions: functionSnap?.exists() ? { nome: functionSnap.data().nome } : null,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao carregar colaborador.')
+    }
     setLoading(false)
   }
 

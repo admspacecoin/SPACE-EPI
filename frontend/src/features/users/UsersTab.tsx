@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { collection, doc, getDocs, orderBy, query, serverTimestamp, writeBatch } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
+import { useAuth } from '../auth/AuthContext'
 import type { UserRole } from '../auth/AuthContext'
 
 type UserRow = {
@@ -13,6 +15,7 @@ type UserRow = {
 const ROLE_OPTIONS: UserRole[] = ['admin', 'almoxarifado', 'seguranca', 'gestor', 'consulta']
 
 export function UsersTab() {
+  const { user: currentUser } = useAuth()
   const [users, setUsers] = useState<UserRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -20,13 +23,12 @@ export function UsersTab() {
 
   async function load() {
     setLoading(true)
-    const { data, error: fetchError } = await supabase
-      .from('users')
-      .select('id, nome, email, perfil, status')
-      .order('nome')
-
-    if (fetchError) setError(fetchError.message)
-    else setUsers((data ?? []) as UserRow[])
+    try {
+      const snap = await getDocs(query(collection(db, 'users'), orderBy('nome')))
+      setUsers(snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) }) as UserRow))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao carregar usuários.')
+    }
     setLoading(false)
   }
 
@@ -37,11 +39,23 @@ export function UsersTab() {
   async function updateUser(id: string, patch: Partial<Pick<UserRow, 'perfil' | 'status'>>) {
     setSavingId(id)
     setError(null)
-    const { error: updateError } = await supabase.from('users').update(patch).eq('id', id)
-    if (updateError) {
-      setError(`Falha ao salvar: ${updateError.message}`)
-    } else {
+    try {
+      const before = users.find((u) => u.id === id) ?? null
+      const batch = writeBatch(db)
+      batch.update(doc(db, 'users', id), patch)
+      batch.set(doc(collection(db, 'auditLogs')), {
+        usuarioId: currentUser?.uid ?? null,
+        acao: 'UPDATE',
+        modulo: 'users',
+        registroId: id,
+        dadosAnteriores: before,
+        dadosNovos: patch,
+        data: serverTimestamp(),
+      })
+      await batch.commit()
       setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)))
+    } catch (err) {
+      setError(`Falha ao salvar: ${err instanceof Error ? err.message : 'erro desconhecido'}`)
     }
     setSavingId(null)
   }
@@ -84,7 +98,7 @@ export function UsersTab() {
               <tr>
                 <td colSpan={4} className="px-4 py-6 text-center text-steel-500">
                   Nenhum usuário encontrado. Crie usuários pela tela de login (cadastro) ou pelo
-                  Supabase Auth — eles aparecem aqui automaticamente com perfil "consulta".
+                  Firebase Auth — eles aparecem aqui automaticamente com perfil "consulta".
                 </td>
               </tr>
             )}
