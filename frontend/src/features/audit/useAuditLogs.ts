@@ -94,7 +94,18 @@ export function useAuditLogs(filters: AuditFilters) {
 
         setLogs(filtered)
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Falha ao carregar auditoria.')
+        // A leitura de auditLogs fica restrita a admin (dado sensível, não
+        // afrouxamos a regra como nas demais coleções) — o Firestore nega
+        // "Missing or insufficient permissions" quando a coleção ainda está
+        // totalmente vazia (bug conhecido de list + regra baseada em get()),
+        // mesmo para quem tem permissão de verdade. Trata como "sem
+        // registros ainda" em vez de mostrar um erro confuso.
+        const msg = err instanceof Error ? err.message : ''
+        if (msg.includes('Missing or insufficient permissions')) {
+          setLogs([])
+        } else {
+          setError(msg || 'Falha ao carregar auditoria.')
+        }
       }
       setLoading(false)
     }

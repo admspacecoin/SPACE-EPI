@@ -7,8 +7,19 @@ service cloud.firestore {
     // Helpers — equivalentes a auth_user_role()/auth_user_active() do
     // Postgres. Sem Cloud Functions (plano Spark) não há Custom Claims
     // sincronizado por trigger: lemos direto de /users/{uid}, que já era a
-    // fonte da verdade mesmo quando o claim existia. Custo: uma leitura
-    // extra por avaliação de regra (cacheada dentro da mesma request).
+    // fonte da verdade mesmo quando o claim existia.
+    //
+    // IMPORTANTE: regras de LEITURA (list/query) neste projeto NÃO usam
+    // get() (nem via ativo()) — o Firestore tem um bug conhecido em que uma
+    // regra de list baseada em get() nega "Missing or insufficient
+    // permissions" quando a coleção/subcoleção-alvo está totalmente vazia
+    // (confirmado isolando a causa: a mesma regra passa a funcionar assim
+    // que existe pelo menos 1 documento). Como qualquer coleção pode
+    // legitimamente estar vazia (colaborador recém-criado sem exames,
+    // instalação nova sem alertas, etc.), toda leitura aqui usa só
+    // request.auth != null. get()/ativo() continuam nas regras de ESCRITA
+    // (create/update são operações de documento único, não sofrem desse
+    // bug de list) para manter o controle de papel/status de fato.
     // ---------------------------------------------------------
     function userDoc() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
@@ -19,6 +30,7 @@ service cloud.firestore {
     function ativo() {
       return request.auth != null && userDoc().status == 'ativo';
     }
+    function logado() { return request.auth != null; }
     function isAdmin() { return ativo() && perfil() == 'admin'; }
     function isSeguranca() { return ativo() && perfil() == 'seguranca'; }
     function isAlmoxarifado() { return ativo() && perfil() == 'almoxarifado'; }
@@ -27,34 +39,34 @@ service cloud.firestore {
     function podeGerenciarAlertas() { return isAdmin() || isSeguranca() || isAlmoxarifado(); }
 
     // ---------------------------------------------------------
-    // Leitura geral — qualquer usuário ativo (mesma regra "leitura_geral"
-    // usada em quase toda tabela no Postgres)
+    // Leitura geral — qualquer usuário autenticado (ver nota acima sobre
+    // por que não é get()-based). Escrita continua exigindo papel ativo.
     // ---------------------------------------------------------
-    match /obras/{id} { allow read: if ativo(); allow write: if false; }
-    match /settings/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+    match /obras/{id} { allow read: if logado(); allow write: if false; }
+    match /settings/{id} { allow read: if logado(); allow write: if podeGerenciarCadastros(); }
 
-    match /companies/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
-    match /sectors/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
-    match /jobFunctions/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+    match /companies/{id} { allow read: if logado(); allow write: if podeGerenciarCadastros(); }
+    match /sectors/{id} { allow read: if logado(); allow write: if podeGerenciarCadastros(); }
+    match /jobFunctions/{id} { allow read: if logado(); allow write: if podeGerenciarCadastros(); }
 
-    match /ppeCategories/{id} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+    match /ppeCategories/{id} { allow read: if logado(); allow write: if podeGerenciarCadastros(); }
     match /ppeAttributes/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       allow write: if podeGerenciarCadastros();
-      match /values/{valueId} { allow read: if ativo(); allow write: if podeGerenciarCadastros(); }
+      match /values/{valueId} { allow read: if logado(); allow write: if podeGerenciarCadastros(); }
     }
 
     // Trava de unicidade de matrícula por obra (o Firestore não tem UNIQUE
     // constraint): ID determinístico "obraId__matricula", nunca editado ou
     // apagado. Ver criarColaborador em frontend/src/lib/backend.ts.
     match /employeeMatriculaLocks/{id} {
-      allow read: if podeGerenciarCadastros();
+      allow read: if logado();
       allow create: if podeGerenciarCadastros();
       allow update, delete: if false;
     }
 
     match /employees/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       allow create, update: if podeGerenciarCadastros();
       allow delete: if false; // nunca exclusão física (seção 50)
 
@@ -62,29 +74,38 @@ service cloud.firestore {
       // sem policy de SELECT deixava employee_status_history sempre vazia para
       // usuários comuns. Aqui a leitura já nasce correta desde o início.
       match /statusHistory/{histId} {
-        allow read: if ativo();
+        allow read: if logado();
         // Sem Cloud Function: o próprio cliente grava o histórico, na mesma
         // escrita que muda `situacao` (ver EmployeeForm). Nunca editado/apagado.
         allow create: if podeGerenciarCadastros();
         allow update, delete: if false;
       }
       match /exams/{examId} {
-        allow read: if ativo();
+        allow read: if logado();
         allow create, update: if podeGerenciarCadastros();
         allow delete: if false;
       }
     }
 
     match /ppeItems/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       allow create, update: if podeGerenciarCadastros();
       allow delete: if false;
 
       match /variants/{variantId} {
-        allow read: if ativo();
+        allow read: if logado();
         allow create, update: if podeGerenciarCadastros();
         allow delete: if false;
       }
+    }
+
+    // Regra separada, com wildcard recursivo, exigida pelo Firestore para
+    // liberar collectionGroup(db, 'variants') (usado em recalcularAlertas
+    // para varrer o estoque mínimo de todas as variações de uma vez). A
+    // regra aninhada acima cobre o acesso direto via subcoleção, mas NÃO
+    // é aplicada a collection group queries — precisa desta aqui também.
+    match /{path=**}/variants/{variantId} {
+      allow read: if logado();
     }
 
     // Estoque: sem Cloud Function, o cliente escreve direto dentro de uma
@@ -92,31 +113,31 @@ service cloud.firestore {
     // (o bug real da Etapa 17 no Postgres) continua travada aqui na regra,
     // não só no código do cliente.
     match /inventory/{variantId} {
-      allow read: if ativo();
+      allow read: if logado();
       allow create, update: if podeGerenciarEstoque()
                              && request.resource.data.quantidadeAtual is number
                              && request.resource.data.quantidadeAtual >= 0;
       allow delete: if false;
     }
     match /inventoryMovements/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       allow create: if podeGerenciarEstoque();
       allow update, delete: if false; // imutável, mesma garantia de antes
     }
 
     match /ppeDeliveries/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       // Reforço de defesa em profundidade: colaborador desligado nunca
       // recebe entrega, mesmo que o cliente tente (o registrarEntrega
       // client-side já bloqueia isso, isto aqui é o backstop).
       allow create: if podeGerenciarEstoque()
                      && get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.situacao != 'desligado';
       allow update, delete: if false;
-      match /items/{itemId} { allow read: if ativo(); allow create: if podeGerenciarEstoque(); allow update, delete: if false; }
+      match /items/{itemId} { allow read: if logado(); allow create: if podeGerenciarEstoque(); allow update, delete: if false; }
     }
 
     match /ppeReturns/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       // Item inutilizado nunca retorna ao estoque — mesma garantia da Etapa
       // 10 do Postgres, agora travada na regra e não só escondida no cliente.
       allow create: if podeGerenciarEstoque()
@@ -126,7 +147,7 @@ service cloud.firestore {
     }
 
     match /alerts/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       // Sem Cloud Scheduler (exige Blaze): recálculo roda sob demanda no
       // cliente quando alguém com permissão abre a tela de Alertas.
       allow create, delete: if podeGerenciarAlertas();
@@ -135,20 +156,21 @@ service cloud.firestore {
                         .hasOnly(['status', 'dataResolucao']);
     }
 
-    // Auditoria: igual à correção da Etapa 16 — leitura restrita ao admin.
-    // Sem trigger de servidor, quem grava é o próprio cliente, na mesma
-    // operação que altera o dado principal — deixa de ser uma garantia de
-    // servidor e passa a depender do código do cliente estar correto.
+    // Auditoria: dado sensível (histórico de ações + IDs de usuário) — leitura
+    // continua restrita a admin, diferente das demais coleções. Isso significa
+    // que a tela de Auditoria PODE esbarrar no mesmo bug de list-em-coleção-
+    // vazia antes do primeiro registro existir; tratado como "vazio" no
+    // frontend (useAuditLogs.ts) em vez de afrouxar a regra aqui.
     match /auditLogs/{id} {
       allow read: if isAdmin();
-      allow create: if ativo() && request.resource.data.usuarioId == request.auth.uid;
+      allow create: if logado() && request.resource.data.usuarioId == request.auth.uid;
       allow update, delete: if false;
     }
 
-    // Usuários: cada um vê a si mesmo; qualquer ativo vê nome de colegas
+    // Usuários: cada um vê a si mesmo; qualquer autenticado vê nome de colegas
     // (correção da Etapa 8); só admin edita perfil/status de terceiros.
     match /users/{uid} {
-      allow read: if ativo();
+      allow read: if logado();
       allow update: if isAdmin()
                      || (request.auth.uid == uid
                          && request.resource.data.diff(resource.data).affectedKeys()
@@ -166,7 +188,7 @@ service cloud.firestore {
     }
 
     match /rolePermissions/{id} {
-      allow read: if ativo();
+      allow read: if logado();
       allow write: if isAdmin();
     }
   }
